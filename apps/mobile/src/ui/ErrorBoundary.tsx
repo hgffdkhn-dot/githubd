@@ -7,6 +7,7 @@
 
 import React from 'react';
 import { View, Text, ScrollView, Pressable, StyleSheet } from 'react-native';
+import { recordError } from './crashLog.js';
 
 interface State {
   error: Error | null;
@@ -20,7 +21,8 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // 生产环境应把这里换成上报通道（且必须脱敏，绝不能带上消息内容或密钥）
+    // 落盘，保证下次启动能看到；生产环境可换成脱敏后的上报通道
+    void recordError('render', error);
     console.error('[E2EE] 界面崩溃:', error, info.componentStack);
   }
 

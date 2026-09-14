@@ -3,6 +3,7 @@ import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform } from 're
 import { Text, TextInput, Button, Surface, IconButton, useTheme } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useChat } from '../src/chat/ChatProvider.js';
+import { loadLastError, clearLastError, type CrashRecord } from '../src/ui/crashLog.js';
 
 export default function LoginScreen() {
   const { register, login, status, error } = useChat();
@@ -14,6 +15,13 @@ export default function LoginScreen() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [busy, setBusy] = useState(false);
   const [secure, setSecure] = useState(true);
+  const [crash, setCrash] = useState<CrashRecord | null>(null);
+  const [showCrash, setShowCrash] = useState(false);
+
+  // 上次崩溃的原因直接显示在界面上，省去连电脑捞日志
+  React.useEffect(() => {
+    loadLastError().then(setCrash);
+  }, []);
 
   React.useEffect(() => {
     if (status === 'ready') router.replace('/contacts');
@@ -113,6 +121,39 @@ export default function LoginScreen() {
           </Button>
         </Surface>
 
+        {crash ? (
+          <Surface style={styles.card} elevation={1}>
+            <Text variant="titleSmall" style={{ color: theme.colors.error }}>
+              上次启动异常（{crash.tag}）
+            </Text>
+            <Text variant="bodySmall" style={styles.crashMeta}>
+              {new Date(crash.at).toLocaleString()}
+            </Text>
+            {showCrash ? (
+              <ScrollView style={styles.crashBox}>
+                <Text variant="bodySmall" style={styles.crashText}>
+                  {crash.message}
+                  {'\n\n'}
+                  {crash.stack}
+                </Text>
+              </ScrollView>
+            ) : null}
+            <Button mode="text" compact onPress={() => setShowCrash((v) => !v)}>
+              {showCrash ? '收起详情' : '查看详情'}
+            </Button>
+            <Button
+              mode="text"
+              compact
+              onPress={() => {
+                void clearLastError();
+                setCrash(null);
+              }}
+            >
+              清除记录
+            </Button>
+          </Surface>
+        ) : null}
+
         <View style={styles.noteRow}>
           <IconButton icon="shield-key" size={18} iconColor={theme.colors.outline} />
           <Text variant="bodySmall" style={styles.note}>
@@ -136,4 +177,7 @@ const styles = StyleSheet.create({
   button: { marginTop: 4, marginBottom: 4 },
   noteRow: { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: 8 },
   note: { flex: 1, opacity: 0.7, lineHeight: 18, paddingTop: 8 },
+  crashMeta: { opacity: 0.6, marginTop: 2 },
+  crashBox: { maxHeight: 180, marginTop: 8, backgroundColor: '#f2f2f2', borderRadius: 8, padding: 8 },
+  crashText: { fontFamily: 'monospace', fontSize: 11 },
 });

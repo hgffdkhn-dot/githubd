@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatEngine, type DecryptedMessage } from './ChatEngine.js';
+import { recordError } from '../ui/crashLog.js';
 
 const DEFAULT_SERVER = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787';
 
@@ -22,7 +23,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     try {
       return new ChatEngine(DEFAULT_SERVER);
     } catch (error) {
-      console.error('[E2EE] ChatEngine 初始化失败:', error);
+      void recordError('engine-init', error);
       return null;
     }
   });
@@ -58,8 +59,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setStatus('ready');
       })
       .catch((e) => {
-        // 恢复失败不算致命错误，停在登录页即可，但要让用户知道
-        console.error('[E2EE] 会话恢复失败:', e);
+        // 恢复失败不致命（停在登录页即可），但要落盘以便排查
+        void recordError('restore', e);
       });
   }, [engine]);
 
