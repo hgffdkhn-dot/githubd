@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    name: 协议层测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # 只安装协议层与服务端，避免拉取庞大的 React Native / Expo 依赖树
+      - run: npm install --legacy-peer-deps --workspace=packages/protocol --workspace=apps/server --include-workspace-root
+      - name: 运行 X3DH / Double Ratchet 互操作测试
+        run: npm run test:protocol
+      - name: 类型检查
+        run: npx tsc -p packages/protocol/tsconfig.json --noEmit
+
+  server:
+    name: 服务端测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install --legacy-peer-deps --workspace=packages/protocol --workspace=apps/server --include-workspace-root
+      - name: 生成开发证书（HTTPS 用例需要）
+        run: npm run dev:cert
+      - name: 运行端到端联调测试
+        run: npm run test:server
+      - name: 类型检查
+        run: npx tsc -p apps/server/tsconfig.json --noEmit
+
+  # 静态边界检查：与运行时测试互补，防止有人把明文或私钥写进代码
+  security-boundary:
+    name: 安全边界静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 源码中不得出现硬编码私钥
+        run: |
+          if grep -rInE "(BEGIN .*PRIVATE KEY)" apps packages \
+               --include="*.ts" --include="*.tsx" --include="*.json" \
+               --exclude-dir=node_modules; then
+            echo "发现硬编码私钥"; exit 1
+          fi
+          echo "未发现硬编码私钥"
+      - name: 服务端不得出现明文字段
+        run: |
+          if grep -rInE "(plaintext|messageText)" apps/server/src \
+               --include="*.ts" | grep -v "禁止\|forbidden\|FORBIDDEN\|不允许\|assertNo"; then
+            echo "服务端源码出现明文字段"; exit 1
+          fi
+          echo "服务端未出现明文字段"
+
+  mobile-typecheck:
+    name: 移动端类型检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: 安装依赖（含 Expo / React Native）
+        run: npm install --legacy-peer-deps
+      - name: 检查 Expo 依赖版本匹配
+        working-directory: apps/mobile
+        run: npx expo install --check || echo "存在版本偏差，建议运行 npx expo install --fix"
+      # 沙盒环境无法完整安装 RN/Expo 依赖，这一项必须在 CI 里验证
+      - name: 移动端类型检查
+        run: npx tsc -p apps/mobile/tsconfig.json --noEmit --types react,node

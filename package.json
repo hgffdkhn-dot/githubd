@@ -1,0 +1,28 @@
+{
+  "name": "e2ee-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "端到端加密一对一聊天：Signal 协议（X3DH + Double Ratchet）参考实现 + Expo 客户端 + Node 服务端",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "test": "npm run test:protocol && npm run test:server",
+    "test:protocol": "cd packages/protocol && npx tsx --test test/*.test.ts",
+    "test:server": "cd apps/server && rm -rf data && npx tsx --test test/*.test.ts",
+    "server": "cd apps/server && npx tsx src/index.ts",
+    "dev:cert": "bash scripts/gen-dev-cert.sh",
+    "check:server": "node scripts/check-server.mjs",
+    "mobile": "cd apps/mobile && npx expo start",
+    "typecheck": "cd packages/protocol && npx tsc --noEmit && cd ../../apps/server && npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.7.0",
+    "@noble/hashes": "^1.7.1",
+    "ws": "^8.18.0"
+  }
+}

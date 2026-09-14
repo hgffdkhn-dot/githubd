@@ -1,0 +1,50 @@
+name: Build iOS
+
+# iOS 构建需要 Apple 开发者账号与证书，交给 EAS Build 托管最省事。
+# 需要配置仓库密钥：EXPO_TOKEN（在 expo.dev 生成 Personal Access Token）
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: EAS 构建档位
+        required: true
+        default: development
+        type: choice
+        options: [development, preview, production]
+
+jobs:
+  build:
+    name: 通过 EAS 构建 iOS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm install --legacy-peer-deps
+
+      - name: 校验 EXPO_TOKEN
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "缺少 EXPO_TOKEN：在 https://expo.dev/settings/access-tokens 生成后，"
+            echo "添加到仓库 Settings → Secrets → Actions"
+            exit 1
+          fi
+
+      - name: 触发 EAS 构建
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL || 'https://localhost:8787' }}
+        run: |
+          npx eas-cli@latest build \
+            --platform ios \
+            --profile ${{ github.event.inputs.profile }} \
+            --non-interactive \
+            --no-wait

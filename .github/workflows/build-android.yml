@@ -1,0 +1,88 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 构建类型
+        required: true
+        default: debug
+        type: choice
+        options: [debug, release]
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: 构建 Android APK / AAB
+    runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL || 'https://localhost:8787' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 安装依赖
+        run: npm install --legacy-peer-deps
+
+      - name: 生成原生工程
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --non-interactive --clean
+
+      - name: 构建 Debug APK
+        if: ${{ github.event.inputs.build_type != 'release' }}
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: 构建 Release AAB（需配置签名）
+        if: ${{ github.event.inputs.build_type == 'release' }}
+        working-directory: apps/mobile/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x ./gradlew
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > ../e2ee-release.jks
+            cat >> app/build.gradle <<'GRADLE'
+
+          // 由 CI 注入的发布签名配置
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("../../e2ee-release.jks")
+                      storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                      keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+                  }
+              }
+              buildTypes.release.signingConfig signingConfigs.release
+          }
+          GRADLE
+          fi
+          ./gradlew bundleRelease --no-daemon
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ github.event.inputs.build_type || 'release' }}
+          path: |
+            apps/mobile/android/app/build/outputs/apk/debug/*.apk
+            apps/mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 30
