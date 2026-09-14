@@ -65,6 +65,25 @@ cd android && ./gradlew clean && cd ..
 
 脚本里有个坑值得记住：**不要用 `yes | sdkmanager`**。在 `set -o pipefail` 下，sdkmanager 读完后退出，`yes` 会被 SIGPIPE 杀掉（退出码 141），管道整体判定失败——sdkmanager 明明装成功了，脚本却以为失败。改为把一批 `y` 写进临时文件再重定向喂进去。
 
+## CI 报 "path may not be null or empty string. path=''"
+
+出错点是 `android/app/build.gradle` 里解析入口那一行。真实成因：**Expo 的 `resolveAppEntry` 解析 `package.json` 的 `main` 失败，返回了空字符串**，Gradle 拿着空路径去 `file("")` 就炸了——错误信息完全看不出来。
+
+典型触发场景：monorepo。`expo` 模板默认 `main` 是 `node_modules/expo/AppEntry.js`，这是**相对工程目录的路径**。而 workspace 把依赖提升到仓库根，工程目录下根本没有 `node_modules`，于是解析为空。
+
+修法：改成 `index.js` 并显式注册根组件：
+
+```js
+// index.js
+import { registerRootComponent } from 'expo';
+import App from './App';
+registerRootComponent(App);
+```
+
+`'expo'` 是包标识符，走 node_modules 提升查找，monorepo 下安全。
+
+`scripts/check-entry.mjs` 会在构建前校验 main 能否解析到真实文件（相对路径与包标识符两种写法都支持），构建前几秒就能发现，不用等 Gradle。
+
 ## 抓日志的正确姿势
 
 如果仍需看 logcat：

@@ -45,6 +45,11 @@ jobs:
             react-native-screens \
             expo-build-properties
 
+      # Gradle 报 "path may not be null or empty string" 的真因是入口解析失败，
+      # 但错误信息完全看不出来。这里先查一次，秒级失败。
+      - name: 校验入口文件可解析
+        run: node scripts/check-entry.mjs apps/diagnostic
+
       - name: 生成原生工程
         working-directory: apps/diagnostic
         run: npx expo prebuild --platform android --non-interactive --clean

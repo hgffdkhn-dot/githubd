@@ -74,6 +74,9 @@ jobs:
             echo "expo-router 的 peer 依赖缺失，打包必然失败"; exit 1
           fi
 
+      - name: 校验入口文件可解析
+        run: node scripts/check-entry.mjs apps/mobile
+
       - name: 生成原生工程
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --non-interactive --clean
