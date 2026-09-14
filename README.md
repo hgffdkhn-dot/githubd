@@ -69,6 +69,20 @@ npx expo run:ios      # 或 npx expo run:android
 
 未配置签名密钥时 release 构建产出未签名产物；debug 构建无需任何密钥，可直接下载安装的 APK。
 
+### 版本锁定说明（重要）
+
+`apps/mobile/app.json` 里通过 `expo-build-properties` 锁定了 `android.kotlinVersion: "1.9.25"`，**不要随意删除**。
+
+原因：Compose Compiler 与 Kotlin 必须严格配对——1.5.15 ⇄ 1.9.25，1.5.14 ⇄ 1.9.24（见 [官方兼容表](https://developer.android.com/jetpack/androidx/releases/compose-kotlin)）。Expo SDK 52 默认 Kotlin 1.9.24，而依赖链会拉入 Compose Compiler 1.5.15，两者不匹配会导致：
+
+```
+e: This version (1.5.15) of the Compose Compiler requires Kotlin version 1.9.25
+   but you appear to be using Kotlin version 1.9.24
+> Task :expo-modules-core:compileDebugKotlin FAILED
+```
+
+修法必须是改配置而不是手改 `android/build.gradle`——`expo prebuild --clean` 会覆盖原生目录，手改的会被冲掉。CI 中有两道防线：构建前校验 `app.json` 锁定存在，prebuild 后校验 `gradle.properties` 注入成功，避免每次都烧掉一个完整的 Android 构建才发现。
+
 ## 目录结构
 
 ```

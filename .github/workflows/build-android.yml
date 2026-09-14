@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - uses: actions/setup-java@v4
@@ -39,6 +39,19 @@ jobs:
       - name: 生成原生工程
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --non-interactive --clean
+
+      # 先确认 expo-build-properties 真的把 Kotlin 版本写进了 gradle.properties
+      # 否则 Gradle 会在几分钟后以 Compose/Kotlin 版本不匹配失败，白跑一趟
+      - name: 确认 Kotlin 版本已注入
+        working-directory: apps/mobile
+        run: |
+          if ! grep -q '^android.kotlinVersion=1.9.25$' android/gradle.properties; then
+            echo "android/gradle.properties 中未找到 android.kotlinVersion=1.9.25"
+            echo "当前内容："
+            cat android/gradle.properties
+            exit 1
+          fi
+          echo "Kotlin 版本已注入：$(grep '^android.kotlinVersion' android/gradle.properties)"
 
       - name: 构建 Debug APK
         if: ${{ github.event.inputs.build_type != 'release' }}
