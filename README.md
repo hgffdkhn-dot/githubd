@@ -69,6 +69,17 @@ npx expo run:ios      # 或 npx expo run:android
 
 未配置签名密钥时 release 构建产出未签名产物；debug 构建无需任何密钥，可直接下载安装的 APK。
 
+### 打开后一片纯白？
+
+白屏 = 组件树在初始化阶段崩了，但异常没冒出来（这是 React 的默认行为：整棵树卸载后什么都不渲染）。
+
+已加两道防护：
+
+1. `src/ui/ErrorBoundary.tsx` —— 捕获渲染异常并显示错误堆栈，而不是留白
+2. `ChatProvider` 容错 —— `new ChatEngine()` 会注入 quick-crypto 并打开 SQLite，任一失败都不再让整棵树崩掉，而是转入 `broken` 状态并在登录页显示原因
+
+登录页现在有登录/注册切换，界面层用 **react-native-paper**（Material Design 3），按钮、输入框、卡片、列表都遵循 Material You 规范，观感接近原生 Android。
+
 ### 打包报 Unable to resolve module react-native-safe-area-context？
 
 `expo-router` 只是个壳，安全区、原生屏幕、深链、常量、状态栏都是它的 **peer 依赖**，必须显式安装：

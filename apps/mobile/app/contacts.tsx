@@ -1,57 +1,98 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, FlatList, TouchableOpacity, StyleSheet, Button } from 'react-native';
+import { View, StyleSheet, FlatList } from 'react-native';
+import {
+  Text,
+  TextInput,
+  Button,
+  Surface,
+  List,
+  Divider,
+  ActivityIndicator,
+  useTheme,
+  IconButton,
+} from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useChat } from '../src/chat/ChatProvider.js';
 
 export default function ContactsScreen() {
   const { search } = useChat();
   const router = useRouter();
+  const theme = useTheme();
+
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ id: string; username: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [searched, setSearched] = useState(false);
 
   async function runSearch() {
-    setResults(await search(query));
+    if (!query.trim()) return;
+    setBusy(true);
+    setSearched(true);
+    try {
+      setResults(await search(query.trim()));
+    } catch {
+      setResults([]);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>找人聊天</Text>
-      <View style={styles.row}>
+    <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+      <Surface style={styles.searchBar} elevation={2}>
         <TextInput
-          style={styles.input}
-          placeholder="输入用户名"
-          autoCapitalize="none"
+          label="搜索用户名"
+          mode="outlined"
           value={query}
           onChangeText={setQuery}
+          onSubmitEditing={runSearch}
+          autoCapitalize="none"
+          returnKeyType="search"
+          left={<TextInput.Icon icon="magnify" />}
+          style={styles.input}
         />
-        <Button title="搜索" onPress={runSearch} />
-      </View>
+        <Button mode="contained" onPress={runSearch} loading={busy} disabled={busy || !query.trim()}>
+          搜索
+        </Button>
+      </Surface>
+
+      {busy ? <ActivityIndicator style={styles.loader} /> : null}
 
       <FlatList
         data={results}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }: { item: { id: string; username: string } }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => router.push({ pathname: '/chat/[userId]', params: { userId: item.id, username: item.username } })}
-          >
-            <Text style={styles.itemText}>{item.username}</Text>
-            <Text style={styles.itemHint}>建立加密会话</Text>
-          </TouchableOpacity>
+        ItemSeparatorComponent={() => <Divider />}
+        renderItem={({ item }) => (
+          <List.Item
+            title={item.username}
+            description="点击建立加密会话"
+            left={(props) => <List.Icon {...props} icon="account-circle" />}
+            right={(props) => <List.Icon {...props} icon="chevron-right" />}
+            onPress={() =>
+              router.push({
+                pathname: '/chat/[userId]',
+                params: { userId: item.id, username: item.username },
+              })
+            }
+          />
         )}
-        ListEmptyComponent={<Text style={styles.empty}>搜索结果会出现在这里</Text>}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <IconButton icon="account-search" size={40} iconColor={theme.colors.outline} />
+            <Text variant="bodyMedium" style={{ opacity: 0.6 }}>
+              {searched ? '没有找到该用户' : '输入用户名开始搜索'}
+            </Text>
+          </View>
+        }
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 24, gap: 12 },
-  title: { fontSize: 22, fontWeight: '700' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  input: { flex: 1, borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10 },
-  item: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  itemText: { fontSize: 16 },
-  itemHint: { fontSize: 12, color: '#888' },
-  empty: { marginTop: 24, color: '#999', textAlign: 'center' },
+  root: { flex: 1 },
+  searchBar: { padding: 16, gap: 12 },
+  input: { backgroundColor: 'transparent' },
+  loader: { marginTop: 16 },
+  empty: { alignItems: 'center', marginTop: 48, gap: 4 },
 });

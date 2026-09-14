@@ -100,6 +100,8 @@ jobs:
             expo-router \
             react-native-safe-area-context \
             react-native-screens \
+            react-native-paper \
+            react-native-vector-icons \
             expo-linking \
             expo-constants \
             expo-status-bar
