@@ -57,6 +57,14 @@ cd android && ./gradlew clean && cd ..
 
 真正值得做的"最小化验证"，是诊断工程这条路径：同样的构建流程、同样的依赖，只把 UI 换成 Hello World，从而把问题范围收窄到"环境"还是"代码"。
 
+## CI 报 "Error on ZipFile unknown archive"
+
+发生在 `android-actions/setup-android`：该 action 会连带安装 Android Emulator（体积最大的那个包），下载中断就报这个错，整个 job 直接失败。构建 APK **用不到模拟器**。
+
+已替换为 `scripts/setup-android-sdk.sh`，只装三个必需包（`platform-tools`、`platforms;android-35`、`build-tools;35.0.0`），每个包失败重试三次，并清理可能损坏的半成品 zip。
+
+脚本里有个坑值得记住：**不要用 `yes | sdkmanager`**。在 `set -o pipefail` 下，sdkmanager 读完后退出，`yes` 会被 SIGPIPE 杀掉（退出码 141），管道整体判定失败——sdkmanager 明明装成功了，脚本却以为失败。改为把一批 `y` 写进临时文件再重定向喂进去。
+
 ## 抓日志的正确姿势
 
 如果仍需看 logcat：

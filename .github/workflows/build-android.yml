@@ -34,7 +34,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      # 不用 android-actions/setup-android：它会连带安装 Android Emulator，
+      # 下载中断即报 "Error on ZipFile unknown archive"，构建根本用不到模拟器
+      - name: 准备 Android SDK
+        timeout-minutes: 10
+        run: bash scripts/setup-android-sdk.sh
 
       - name: 安装依赖
         run: npm install --legacy-peer-deps
