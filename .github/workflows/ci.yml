@@ -93,6 +93,16 @@ jobs:
           cache: npm
       - name: 安装依赖（含 Expo / React Native）
         run: npm install --legacy-peer-deps
+      - name: 补齐 Expo Router 配套依赖
+        working-directory: apps/mobile
+        run: |
+          npx expo install \
+            expo-router \
+            react-native-safe-area-context \
+            react-native-screens \
+            expo-linking \
+            expo-constants \
+            expo-status-bar
       - name: 检查 Expo 依赖版本匹配
         working-directory: apps/mobile
         run: npx expo install --check || echo "存在版本偏差，建议运行 npx expo install --fix"

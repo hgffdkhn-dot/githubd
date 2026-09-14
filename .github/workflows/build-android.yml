@@ -39,6 +39,35 @@ jobs:
       - name: 安装依赖
         run: npm install --legacy-peer-deps
 
+      # expo-router 只是个壳，安全区/原生屏幕/深链/常量/状态栏都是它的 peer 依赖。
+      # 少装任何一个，都要等到 3 分钟后的 createBundleReleaseJsAndAssets 才暴露。
+      # 用 expo install 而不是 npm install：它会按当前 SDK 挑选匹配版本，避免手写版本号漂移。
+      - name: 安装 Expo Router 配套依赖
+        working-directory: apps/mobile
+        run: |
+          npx expo install \
+            expo-router \
+            react-native-safe-area-context \
+            react-native-screens \
+            expo-linking \
+            expo-constants \
+            expo-status-bar
+
+      # 秒级失败：确认这些包真的落在 node_modules 里
+      - name: 校验 Expo Router 依赖齐备
+        run: |
+          missing=0
+          for pkg in react-native-safe-area-context react-native-screens expo-linking expo-constants expo-status-bar expo-router; do
+            if [ -d "node_modules/$pkg" ]; then
+              echo "OK $pkg $(node -p "require('./node_modules/$pkg/package.json').version" 2>/dev/null)"
+            else
+              echo "MISSING $pkg"; missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "expo-router 的 peer 依赖缺失，打包必然失败"; exit 1
+          fi
+
       - name: 生成原生工程
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --non-interactive --clean

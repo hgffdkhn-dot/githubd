@@ -69,6 +69,17 @@ npx expo run:ios      # 或 npx expo run:android
 
 未配置签名密钥时 release 构建产出未签名产物；debug 构建无需任何密钥，可直接下载安装的 APK。
 
+### 打包报 Unable to resolve module react-native-safe-area-context？
+
+`expo-router` 只是个壳，安全区、原生屏幕、深链、常量、状态栏都是它的 **peer 依赖**，必须显式安装：
+
+```bash
+npx expo install expo-router react-native-safe-area-context react-native-screens \
+  expo-linking expo-constants expo-status-bar
+```
+
+用 `expo install` 而不是 `npm install`——它会按当前 SDK 挑选匹配版本，避免手写版本号漂移。缺任何一个，都要等到三分钟后的 `createBundleReleaseJsAndAssets` 才报 `Unable to resolve module`，非常浪费时间。CI 里已加秒级校验，缺失会立刻失败。
+
 ### 装到手机上红屏 "Unable to load script"？
 
 因为你装的是 **debug** 构建。debug 构建**故意不把 JS bundle 打进 APK**，它启动时去连你电脑上 `localhost:8081` 的 Metro 服务；手机连不到，就红屏。
