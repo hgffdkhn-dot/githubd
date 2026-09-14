@@ -62,9 +62,18 @@ jobs:
           fi
           echo "Kotlin OK"
 
+      # 默认堆上限不够，会在跑十几分钟后的依赖收集阶段抛 Java heap space
+      - name: 配置 Gradle 内存
+        run: |
+          free -h || true
+          bash scripts/gradle-memory.sh apps/diagnostic
+
       # 必须走 release 变体，否则 JS bundle 不进 APK，一样白屏
       - name: 构建自包含 APK
+        timeout-minutes: 45
         working-directory: apps/diagnostic/android
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon

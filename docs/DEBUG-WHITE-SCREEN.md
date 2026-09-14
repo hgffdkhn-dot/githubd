@@ -84,6 +84,25 @@ registerRootComponent(App);
 
 `scripts/check-entry.mjs` 会在构建前校验 main 能否解析到真实文件（相对路径与包标识符两种写法都支持），构建前几秒就能发现，不用等 Gradle。
 
+## CI 报 "Java heap space"
+
+发生在 `:app:collectReleaseDependencies` 这类依赖收集阶段，而且是跑了十几分钟之后才抛——最浪费时间的一种失败。
+
+React Native Android 构建有 600+ 个 task，GitHub runner 上的 Gradle 默认堆上限不够用。
+
+对策（`scripts/gradle-memory.sh`，在 prebuild 之后自动写入 `android/gradle.properties`）：
+
+| 参数 | 作用 |
+|---|---|
+| `org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m` | 提高堆与元空间上限 |
+| `org.gradle.parallel=false`、`workers.max=2` | 并行/多 worker 会成倍放大内存占用 |
+| `kotlin.compiler.execution.strategy=in-process` | 避免另起 Kotlin daemon 再吃一份内存 |
+| `kotlin.incremental=false` | CI 上增量编译没有意义，还占内存 |
+
+注意：**必须在 `expo prebuild` 之后写入**，因为 prebuild 会重新生成 `gradle.properties`，提前写会被覆盖。脚本用"存在则替换"的方式写入，重复执行不会产生重复行。
+
+如果 4g 仍然不够，把脚本里的 `Xmx4096m` 调到 `6144m`；runner 内存不足时再考虑启用 Gradle 构建缓存或换更大规格的 runner。
+
 ## 抓日志的正确姿势
 
 如果仍需看 logcat：

@@ -93,11 +93,19 @@ jobs:
           fi
           echo "Kotlin 版本已注入：$(grep '^android.kotlinVersion' android/gradle.properties)"
 
+      - name: 配置 Gradle 内存
+        run: |
+          free -h || true
+          bash scripts/gradle-memory.sh apps/mobile
+
       # 自包含 APK：assembleRelease 会把 JS bundle 打进 APK。
       # Expo 模板默认让 release 复用 debug 签名，所以无需密钥即可产出可安装的 APK。
       - name: 构建自包含 APK（推荐）
         if: ${{ github.event.inputs.build_type == 'standalone' }}
+        timeout-minutes: 45
         working-directory: apps/mobile/android
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon
@@ -111,6 +119,7 @@ jobs:
           ./gradlew assembleDebug --no-daemon
 
       - name: 构建上架用 AAB（需签名密钥）
+        timeout-minutes: 45
         if: ${{ github.event.inputs.build_type == 'release' }}
         working-directory: apps/mobile/android
         env:
