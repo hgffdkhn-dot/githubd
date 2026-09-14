@@ -57,8 +57,9 @@ export class ChatEngine {
   private listeners = new Set<(message: DecryptedMessage) => void>();
 
   constructor(baseUrl: string) {
+    // 只做不会失败的事：注入 provider 与建 API 客户端。
+    // SQLite 打开推迟到 start()，避免构造期异常让整棵树起不来。
     bootstrapCrypto();
-    openDatabase();
     this.api = new ApiClient(baseUrl);
   }
 
@@ -171,6 +172,7 @@ export class ChatEngine {
 
   async start(): Promise<void> {
     if (!this.token) throw new Error('ChatEngine: 未登录');
+    openDatabase();
     if (!this.manager) {
       this.manager = new SessionManager(
         this.identity!,

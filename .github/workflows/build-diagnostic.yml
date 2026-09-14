@@ -1,0 +1,77 @@
+name: Build Diagnostic
+
+# 白屏定位专用：构建一个只渲染 Hello World、并逐项检测原生模块的最小工程。
+# 用它区分"构建/环境问题"与"业务代码问题"。
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: 构建诊断 APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 安装依赖
+        run: npm install --legacy-peer-deps
+
+      - name: 补齐依赖到匹配版本
+        working-directory: apps/diagnostic
+        run: |
+          npx expo install \
+            expo-secure-store \
+            expo-sqlite \
+            react-native-quick-crypto \
+            react-native-keychain \
+            react-native-paper \
+            react-native-vector-icons \
+            react-native-safe-area-context \
+            react-native-screens \
+            expo-build-properties
+
+      - name: 生成原生工程
+        working-directory: apps/diagnostic
+        run: npx expo prebuild --platform android --non-interactive --clean
+
+      - name: 确认 Kotlin 版本已注入
+        working-directory: apps/diagnostic
+        run: |
+          if ! grep -q '^android.kotlinVersion=1.9.25$' android/gradle.properties; then
+            echo "Kotlin 版本未注入"; cat android/gradle.properties; exit 1
+          fi
+          echo "Kotlin OK"
+
+      # 必须走 release 变体，否则 JS bundle 不进 APK，一样白屏
+      - name: 构建自包含 APK
+        working-directory: apps/diagnostic/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: 校验 JS bundle 已内置
+        working-directory: apps/diagnostic/android/app/build/outputs/apk/release
+        run: |
+          APK=$(find . -name "*.apk" | head -1)
+          unzip -l "$APK" | grep -q "assets/index.android.bundle" \
+            && echo "已内置 JS bundle" \
+            || { echo "缺少 JS bundle"; exit 1; }
+
+      - name: 上传诊断 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-apk
+          path: apps/diagnostic/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "E2EE Diagnostic",
+    "slug": "e2ee-diagnostic",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.example.e2eechat.diag"
+    },
+    "android": {
+      "package": "com.example.e2eechat.diag",
+      "permissions": ["INTERNET"]
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25"
+          }
+        }
+      ]
+    ]
+  }
+}
