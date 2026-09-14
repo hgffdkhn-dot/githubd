@@ -51,7 +51,7 @@ npx expo run:ios      # 或 npx expo run:android
 | 工作流 | 触发 | 作用 |
 |---|---|---|
 | `ci.yml` | push / PR | 协议层 10 项测试、服务端 6 项测试、类型检查、安全边界静态扫描 |
-| `build-android.yml` | 手动 / `v*` tag | 生成原生工程并构建 APK（debug）或 AAB（release） |
+| `build-android.yml` | 手动 / `v*` tag | 构建自包含 APK（standalone）、开发调试 APK（debug）或上架 AAB（release） |
 | `build-ios.yml` | 手动 | 通过 EAS Build 构建 iOS（需 `EXPO_TOKEN`） |
 
 ### 需要配置的密钥
@@ -68,6 +68,22 @@ npx expo run:ios      # 或 npx expo run:android
 | `EXPO_PUBLIC_API_URL` | 变量（非密钥），服务端地址 | 建议配置 |
 
 未配置签名密钥时 release 构建产出未签名产物；debug 构建无需任何密钥，可直接下载安装的 APK。
+
+### 装到手机上红屏 "Unable to load script"？
+
+因为你装的是 **debug** 构建。debug 构建**故意不把 JS bundle 打进 APK**，它启动时去连你电脑上 `localhost:8081` 的 Metro 服务；手机连不到，就红屏。
+
+三种产物，选对：
+
+| 类型 | 命令 | JS bundle | 装到手机能否直接跑 |
+|---|---|---|---|
+| `standalone` | `assembleRelease` | 已内置 | ✅ 能，装完即用（推荐） |
+| `debug` | `assembleDebug` | 不内置 | ❌ 不能，必须 `npx expo start --dev-client` 并扫码，且手机与电脑同 Wi-Fi |
+| `release` | `bundleRelease` | 已内置 | 产出 AAB，供 Google Play 上架 |
+
+要能直接安装测试的 APK，请选 **`standalone`**（workflow 已设为默认）。它走 release 变体，JS 被打进 APK；Expo 模板默认让 release 复用 debug 签名，所以**不需要任何签名密钥**就能产出可安装的 APK。
+
+workflow 里有一道校验：上传前用 `unzip -l` 检查 APK 内是否有 `assets/index.android.bundle`，standalone 类型若缺失会直接失败，不会再让你下载一个打不开的包。
 
 ### 版本锁定说明（重要）
 

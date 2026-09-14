@@ -6,9 +6,12 @@ on:
       build_type:
         description: 构建类型
         required: true
-        default: debug
+        default: standalone
         type: choice
-        options: [debug, release]
+        # standalone：自带 JS bundle，装到手机就能跑（推荐）
+        # debug：开发构建，不打包 JS，必须连 Metro 才能用
+        # release：上架用 AAB，需要签名密钥
+        options: [standalone, debug, release]
   push:
     tags: ['v*']
 
@@ -47,20 +50,29 @@ jobs:
         run: |
           if ! grep -q '^android.kotlinVersion=1.9.25$' android/gradle.properties; then
             echo "android/gradle.properties 中未找到 android.kotlinVersion=1.9.25"
-            echo "当前内容："
             cat android/gradle.properties
             exit 1
           fi
           echo "Kotlin 版本已注入：$(grep '^android.kotlinVersion' android/gradle.properties)"
 
-      - name: 构建 Debug APK
-        if: ${{ github.event.inputs.build_type != 'release' }}
+      # 自包含 APK：assembleRelease 会把 JS bundle 打进 APK。
+      # Expo 模板默认让 release 复用 debug 签名，所以无需密钥即可产出可安装的 APK。
+      - name: 构建自包含 APK（推荐）
+        if: ${{ github.event.inputs.build_type == 'standalone' }}
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      # 只有这个类型需要 Metro：装到手机后要 `npx expo start --dev-client` 并扫码
+      - name: 构建开发调试 APK（需连接 Metro）
+        if: ${{ github.event.inputs.build_type == 'debug' }}
         working-directory: apps/mobile/android
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: 构建 Release AAB（需配置签名）
+      - name: 构建上架用 AAB（需签名密钥）
         if: ${{ github.event.inputs.build_type == 'release' }}
         working-directory: apps/mobile/android
         env:
@@ -90,12 +102,32 @@ jobs:
           fi
           ./gradlew bundleRelease --no-daemon
 
+      # 关键防线：debug 构建不含 JS bundle，装到真机必然红屏 "Unable to load script"
+      # 这里在上传前就检查出来，避免用户下载一个打不开的 APK
+      - name: 校验 APK 是否内置 JS bundle
+        if: ${{ github.event.inputs.build_type != 'release' }}
+        working-directory: apps/mobile/android/app/build/outputs/apk
+        run: |
+          APK=$(find . -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then echo "未找到 APK"; exit 1; fi
+          echo "检查产物：$APK"
+          if unzip -l "$APK" | grep -q "assets/index.android.bundle"; then
+            echo "已内置 JS bundle，可以直接安装到手机"
+          else
+            echo "APK 内没有 assets/index.android.bundle"
+            echo "这个包装到手机会红屏 'Unable to load script'"
+            if [ "${{ github.event.inputs.build_type }}" = "standalone" ]; then
+              echo "standalone 类型本应内置 bundle，构建配置有问题"; exit 1
+            fi
+            echo "debug 类型属预期，请配合 Metro 使用：npx expo start --dev-client"
+          fi
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: android-${{ github.event.inputs.build_type || 'release' }}
           path: |
-            apps/mobile/android/app/build/outputs/apk/debug/*.apk
+            apps/mobile/android/app/build/outputs/apk/**/*.apk
             apps/mobile/android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 30
