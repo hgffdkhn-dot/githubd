@@ -131,7 +131,8 @@ export default function LoginScreen() {
             </Text>
             {showCrash ? (
               <ScrollView style={styles.crashBox}>
-                <Text variant="bodySmall" style={styles.crashText}>
+                {/* selectable：长按即可选中复制，免去连电脑捞日志 */}
+                <Text variant="bodySmall" style={styles.crashText} selectable>
                   {crash.message}
                   {'\n\n'}
                   {crash.stack}
@@ -178,6 +179,6 @@ const styles = StyleSheet.create({
   noteRow: { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: 8 },
   note: { flex: 1, opacity: 0.7, lineHeight: 18, paddingTop: 8 },
   crashMeta: { opacity: 0.6, marginTop: 2 },
-  crashBox: { maxHeight: 180, marginTop: 8, backgroundColor: '#f2f2f2', borderRadius: 8, padding: 8 },
+  crashBox: { maxHeight: 320, marginTop: 8, backgroundColor: '#f2f2f2', borderRadius: 8, padding: 8 },
   crashText: { fontFamily: 'monospace', fontSize: 11 },
 });

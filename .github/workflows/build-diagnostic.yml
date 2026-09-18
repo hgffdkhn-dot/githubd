@@ -39,6 +39,7 @@ jobs:
             expo-sqlite \
             react-native-quick-crypto \
             react-native-keychain \
+            react-native-quick-base64 \
             expo-file-system \
             react-native-paper \
             react-native-vector-icons \

@@ -93,6 +93,16 @@ export const PROBES: ProbeDef[] = [
     },
   },
   {
+    name: 'react-native-quick-base64',
+    run: async () => {
+      const m = require('react-native-quick-base64');
+      if (typeof m.fromByteArray !== 'function') throw new Error('fromByteArray 不存在');
+      const b64 = m.fromByteArray(new Uint8Array([102, 111, 111]));
+      if (b64 !== 'Zm9v') throw new Error(`编码结果异常：${b64}`);
+      return '原生 base64 可用（quick-crypto 的必需配套模块）';
+    },
+  },
+  {
     name: 'react-native-quick-crypto',
     run: async () => {
       const m = require('react-native-quick-crypto');

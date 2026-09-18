@@ -55,6 +55,7 @@ jobs:
             react-native-screens \
             react-native-paper \
             react-native-vector-icons \
+            react-native-quick-base64 \
             expo-file-system \
             expo-linking \
             expo-constants \
@@ -64,7 +65,7 @@ jobs:
       - name: 校验 Expo Router 依赖齐备
         run: |
           missing=0
-          for pkg in react-native-safe-area-context react-native-screens react-native-paper react-native-vector-icons expo-linking expo-constants expo-status-bar expo-router; do
+          for pkg in react-native-safe-area-context react-native-screens react-native-paper react-native-vector-icons react-native-quick-crypto react-native-quick-base64 expo-linking expo-constants expo-status-bar expo-router; do
             if [ -d "node_modules/$pkg" ]; then
               echo "OK $pkg $(node -p "require('./node_modules/$pkg/package.json').version" 2>/dev/null)"
             else

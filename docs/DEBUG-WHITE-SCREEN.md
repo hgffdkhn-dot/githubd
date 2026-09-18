@@ -124,6 +124,45 @@ cd android && ./gradlew clean && cd ..
 
 真正值得做的"最小化验证"，是诊断工程这条路径：同样的构建流程、同样的依赖，只把 UI 换成 Hello World，从而把问题范围收窄到"环境"还是"代码"。
 
+## 白屏真凶：`TurboModuleRegistry.getEnforcing(...): 'QuickBase64' could not be found`
+
+### 根因
+
+`react-native-quick-crypto` 依赖另一个**独立安装**的原生模块 **`react-native-quick-base64`**，但它**没有把它声明为 npm 依赖**。所以它不会被自动装上，也不会报"找不到包"，而是在原生侧直接抛：
+
+```
+TurboModuleRegistry.getEnforcing(...): 'QuickBase64' could not be found
+```
+
+这两点让它特别难查：
+- 属于**原生层错误**，JS 的 try/catch 拦不住 → 表现为白屏
+- 错误信息里的 `QuickBase64` 在 `package.json` 里根本搜不到，看不出缺哪个包
+
+官方安装说明确实是两条命令：
+
+```bash
+expo install react-native-quick-crypto
+expo install react-native-quick-base64   # ← 容易漏
+```
+
+### 修法
+
+1. 两个工程的 `package.json` 都加上 `react-native-quick-base64`
+2. `QuickCryptoAead.ts` 在使用前显式装载它的 JSI 绑定（`ensureBase64()`），缺了会抛出可读的错误而不是白屏
+
+### 版本选择：为什么锁 2.2.2
+
+`react-native-quick-base64` 3.0.0+ 是**纯 C++ TurboModule，强制要求 New Architecture**：
+
+- 满足 → 正常
+- 不满足 → 报的正是 `QuickBase64 could not be found`，与"没装这个包"的错误**完全一样**，极易误判
+
+2.2.2 同时支持新旧架构，因此锁定 `2.2.2` 更稳妥。若后续确认 New Architecture 稳定开启，再考虑升到 3.x。
+
+### 顺带改进：崩溃详情可长按复制
+
+登录页的"上次启动异常"详情加了 `selectable`，长按即可选中复制——不用再连电脑捞日志，也不用截图转述。
+
 ## CI 报 Unable to resolve module …/legacy
 
 ### 关键教训：Metro 在打包期静态解析 require()，try/catch 完全没用

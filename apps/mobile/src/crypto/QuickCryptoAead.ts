@@ -44,9 +44,27 @@ interface QuickCrypto {
 
 let quickCrypto: QuickCrypto | null | undefined;
 
+/**
+ * quick-crypto 依赖另一个**独立安装**的原生模块 QuickBase64，
+ * 它没被声明为 npm 依赖，缺了不会报"找不到包"，而是在原生侧直接抛：
+ *   TurboModuleRegistry.getEnforcing(...): 'QuickBase64' could not be found
+ * 这是曾经导致白屏的真凶。这里显式先装好它的 JSI 绑定。
+ */
+function ensureBase64(): void {
+  try {
+    require('react-native-quick-base64');
+  } catch (error) {
+    throw new Error(
+      `react-native-quick-base64 加载失败：${(error as Error).message}。` +
+        '它是 react-native-quick-crypto 必需的配套原生模块，必须单独安装。',
+    );
+  }
+}
+
 function getQuickCrypto(): QuickCrypto {
   if (quickCrypto === undefined) {
     try {
+      ensureBase64();
       quickCrypto = require('react-native-quick-crypto') as QuickCrypto;
     } catch (error) {
       quickCrypto = null;
