@@ -6,28 +6,14 @@
  *
  * 只存异常类型与堆栈，绝不存消息内容、密钥或身份信息。
  *
- * 关键设计：依赖一律延迟 require。
- * 这个模块是"兜底机制"本身——如果它在 bundle 加载阶段就因为原生模块缺失而抛错，
- * 整个 App 会白屏且什么都看不到，兜底反而成了帮凶。
+ * 关键：存储走 safeStore（带 Keystore 降级），自身不直接依赖任何原生模块。
+ * 它是兜底机制，绝不能因为依赖缺失而让 App 起不来。
  */
 
-type SecureStoreModule = typeof import('expo-secure-store');
+import * as safeStore from '../storage/safeStore.js';
 
 const KEY = 'e2ee.lastError';
 const MAX = 1200;
-
-let secureStore: SecureStoreModule | null | undefined;
-
-/** 延迟获取，失败返回 null 而不是抛错 */
-function store(): SecureStoreModule | null {
-  if (secureStore !== undefined) return secureStore;
-  try {
-    secureStore = require('expo-secure-store') as SecureStoreModule;
-  } catch {
-    secureStore = null;
-  }
-  return secureStore;
-}
 
 export interface CrashRecord {
   tag: string;
@@ -35,9 +21,6 @@ export interface CrashRecord {
   stack: string;
   at: number;
 }
-
-// SecureStore 不可用时退化成内存记录：本次会话内仍能看到原因
-let memory: CrashRecord | null = null;
 
 export async function recordError(tag: string, error: unknown): Promise<void> {
   const normalised = error instanceof Error ? error : new Error(String(error));
@@ -47,15 +30,8 @@ export async function recordError(tag: string, error: unknown): Promise<void> {
     stack: (normalised.stack ?? '').slice(0, MAX),
     at: Date.now(),
   };
-  memory = record;
-
-  const s = store();
-  if (!s) {
-    console.error(`[E2EE:${tag}]（仅内存）`, normalised);
-    return;
-  }
   try {
-    await s.setItemAsync(KEY, JSON.stringify(record));
+    await safeStore.setItem(KEY, JSON.stringify(record));
   } catch {
     // 存不下也不能影响主流程
   }
@@ -63,23 +39,18 @@ export async function recordError(tag: string, error: unknown): Promise<void> {
 }
 
 export async function loadLastError(): Promise<CrashRecord | null> {
-  const s = store();
-  if (!s) return memory;
   try {
-    const raw = await s.getItemAsync(KEY);
-    if (!raw) return memory;
+    const raw = await safeStore.getItem(KEY);
+    if (!raw) return null;
     return JSON.parse(raw) as CrashRecord;
   } catch {
-    return memory;
+    return null;
   }
 }
 
 export async function clearLastError(): Promise<void> {
-  memory = null;
-  const s = store();
-  if (!s) return;
   try {
-    await s.deleteItemAsync(KEY);
+    await safeStore.deleteItem(KEY);
   } catch {
     // 忽略
   }
@@ -90,6 +61,9 @@ export async function clearLastError(): Promise<void> {
  *
  * 这是白屏最常见的来源：release 构建下未捕获异常会让整棵 React 树卸载。
  * 这里先落盘再交给原 handler，保证下次启动能看到原因。
+ *
+ * 注意：只能捕获 JS 异常。原生层硬崩溃（如 Keystore 不可用）拦不住，
+ * 那种情况由 safeStore 的崩溃标记机制在下次启动时识别。
  */
 export function installGlobalHandlers(): void {
   try {

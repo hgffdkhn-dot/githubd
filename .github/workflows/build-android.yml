@@ -55,6 +55,7 @@ jobs:
             react-native-screens \
             react-native-paper \
             react-native-vector-icons \
+            expo-file-system \
             expo-linking \
             expo-constants \
             expo-status-bar

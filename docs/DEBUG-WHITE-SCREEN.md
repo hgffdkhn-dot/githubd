@@ -20,6 +20,73 @@
 
 每个探针都不只是 `require` 成功就算过，而会**实际调用一次**（例如 quick-crypto 会做完整的 AES-256-GCM 加解密往返）——因为模块能 import 不代表原生侧真的可用。
 
+## ⚠️ 一次错误推断的纠正
+
+曾根据日志中的 `VA_AppStateWatcher`、`VA_HybridLifecycleListener`、`top.hookvip.pro`（沙箱/Hook 工具痕迹），推断"设备 Keystore 不可用导致硬崩溃"。
+
+**这个推断不成立。** 用户提供的「密钥认证」结果证明硬件层完全正常：
+
+- Google 硬件认证根证书 ✓
+- 引导加载程序已锁定 ✓
+- 证书链 TEE、Keymaster 4.0、安全等级=可信环境 ✓
+
+日志里的沙箱/Hook 痕迹只能说明**这类工具存在**，不能推出 Keystore 不可用——attestation 才是直接证据，它是反证。
+
+### 但 attestation 正常 ≠ 出问题的那个 API 正常
+
+attestation 验证的是**密钥认证链**（硬件背书可信），而 `expo-secure-store` 用的是 Keystore 的**对称密钥 + 特定 accessible 档位**。两者是不同层面：
+
+| 层面 | attestation 能证明 | 不能证明 |
+|---|---|---|
+| 硬件 TEE / Keymaster | ✓ 正常 | — |
+| 某个 accessible 档位可用 | ✗ | 需实测 |
+| `expo-secure-store` 在当前 ROM 正常 | ✗ | 需实测 |
+| 原生模块已正确 autolink | ✗ | 需实测 |
+
+其中 `WHEN_UNLOCKED_THIS_DEVICE_ONLY` 这类档位在部分设备上要求**已设置锁屏凭证**（PIN/图案/密码），与主工程原先使用的档位一致，属于重点怀疑对象。
+
+### 因此诊断 v3 的核心改动
+
+把 secure-store **按档位拆开测**，并保留错误类型名：
+
+- `expo-secure-store（默认档）`
+- `expo-secure-store（THIS_DEVICE_ONLY 档）`
+
+从而区分三种完全不同性质的结果：
+
+| 结果 | 含义 | 对策 |
+|---|---|---|
+| **报错**（有错误类型名） | JS 可捕获的异常 | 看错误信息，多为配置/凭证问题 |
+| **崩溃**（进程消失） | 原生层硬崩溃 | 该模块在当前 ROM 不可用 |
+| **正常** | 无问题 | 排除嫌疑 |
+
+### 对策：崩溃自愈
+
+无法捕获崩溃，但可以**记住它**。主工程的 `src/storage/safeStore.ts` 实现了：
+
+1. 使用 Keystore 前，先用文件写一个"正在试探"标记
+2. 调用成功 → 清除标记
+3. 硬崩溃 → 标记留在磁盘上没被清除
+4. 下次启动读到标记 → 判定 Keystore 不安全，**永久绕开**，改用文件存储
+
+**效果：第一次崩溃，第二次启动自动恢复可用。** 存储后端可通过 `currentBackend()` 查询（keystore / file / memory），界面上会提示安全级别。
+
+### 主工程配套改造
+
+所有 Keystore 类依赖已改为**延迟 require**（顶层 import 会在 bundle 加载期触发原生解析，直接白屏）：
+
+| 文件 | 改动 |
+|---|---|
+| `src/storage/safeStore.ts` | 新增，统一键值存储 + 崩溃标记 |
+| `src/crypto/Keystore.ts` | 改走 safeStore；Keychain 延迟加载并降级 |
+| `src/ui/crashLog.ts` | 改走 safeStore，自身不再依赖原生模块 |
+| `src/storage/Database.ts` | expo-sqlite 延迟加载 |
+| `src/crypto/QuickCryptoAead.ts` | quick-crypto 延迟加载 |
+
+⚠️ 注意：这套降级机制是**针对极端环境的兜底**，并非因为确认了 Keystore 有问题（见上文纠正）。在 attestation 正常的设备上不应触发。
+
+降级到文件存储意味着**密钥不再受硬件保护**，安全性实质下降。生产环境应要求设备具备可用 Keystore，并在检测到降级时拒绝运行或强制告警，而不是默默降级。
+
 ## 为什么 ErrorBoundary 救不了某些白屏
 
 这是最反直觉的一点：**如果原生模块在模块顶层被 import 且加载失败，异常发生在 React 挂载之前**，ErrorBoundary 根本没机会工作，全局 handler 也可能来不及接管。结果是纯白，且崩溃记录为空。

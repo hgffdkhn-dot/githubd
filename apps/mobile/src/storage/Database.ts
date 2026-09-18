@@ -8,14 +8,24 @@
  * 让整库由 Keystore 中的 DBKEK 加密；接口保持一致即可平滑替换。
  */
 
-import * as SQLite from 'expo-sqlite';
+import type * as SQLite from 'expo-sqlite';
 import { toBase64, fromBase64, type RatchetState, type SkippedKeyEntry } from '@e2ee/protocol';
+
+// 延迟 require：原生模块顶层 import 在链接失败时会让整个 bundle 加载失败（白屏）
+let sqliteModule: typeof SQLite | null = null;
+
+function sqlite(): typeof SQLite {
+  if (!sqliteModule) {
+    sqliteModule = require('expo-sqlite') as typeof SQLite;
+  }
+  return sqliteModule;
+}
 
 let db: SQLite.SQLiteDatabase | null = null;
 
 export function openDatabase(name = 'e2ee.db'): SQLite.SQLiteDatabase {
   if (db) return db;
-  db = SQLite.openDatabaseSync(name);
+  db = sqlite().openDatabaseSync(name);
   db.execSync(`
     PRAGMA journal_mode = WAL;
 

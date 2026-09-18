@@ -11,4 +11,14 @@
 import { registerRootComponent } from 'expo';
 import App from './App';
 
+// JS 异常不再静默白屏，直接打到控制台便于 adb 捞取
+const ErrorUtils = globalThis.ErrorUtils;
+if (ErrorUtils?.setGlobalHandler) {
+  const previous = ErrorUtils.getGlobalHandler?.();
+  ErrorUtils.setGlobalHandler((error, isFatal) => {
+    console.error(`[diag] ${isFatal ? 'FATAL' : 'JS'}`, error?.stack || error);
+    previous?.(error, isFatal);
+  });
+}
+
 registerRootComponent(App);

@@ -5,27 +5,21 @@
  * - 长期身份私钥只在 Keychain / Keystore 里生成与保存，永不进入 JS 字符串常量
  * - 数据库主密钥（DBKEK）由系统密钥库保护，数据库本身只存密文与受保护的状态
  * - 首版不支持密钥备份：重装即无法恢复历史会话，这是有意的取舍
+ *
+ * 重要：所有 Keystore/Keychain 依赖一律**延迟 require**。
+ * 顶层 import 会在 bundle 加载期触发原生模块解析，在 Keystore 不可用的环境里
+ * 会导致整棵 React 树起不来（白屏）。延迟 + 降级才能保住可用性。
  */
 
-import * as SecureStore from 'expo-secure-store';
-import * as Keychain from 'react-native-keychain';
 import { toBase64, fromBase64, type KeyStore, type LocalIdentity } from '@e2ee/protocol';
+import * as safeStore from '../storage/safeStore.js';
 
 const IDENTITY_KEY = 'e2ee.identity';
 const SPK_PREFIX = 'e2ee.spk.';
 const OPK_PREFIX = 'e2ee.opk.';
 const SESSION_KEY = 'e2ee.session.token';
 const DEVICE_ID_KEY = 'e2ee.device.id';
-
-async function setSecret(key: string, value: string): Promise<void> {
-  await SecureStore.setItemAsync(key, value, {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
-}
-
-async function getSecret(key: string): Promise<string | null> {
-  return SecureStore.getItemAsync(key);
-}
+const DB_KEY = 'e2ee.dbkey';
 
 export interface StoredIdentity {
   identityKey: string;
@@ -41,63 +35,90 @@ export async function saveIdentity(identity: LocalIdentity): Promise<void> {
     signingKey: toBase64(identity.signingKey),
     signingPrivateKey: toBase64(identity.signingPrivateKey),
   };
-  await setSecret(IDENTITY_KEY, JSON.stringify(payload));
+  await safeStore.setItem(IDENTITY_KEY, JSON.stringify(payload));
 }
 
 export async function loadIdentity(): Promise<LocalIdentity | null> {
-  const raw = await getSecret(IDENTITY_KEY);
+  const raw = await safeStore.getItem(IDENTITY_KEY);
   if (!raw) return null;
-  const parsed = JSON.parse(raw) as StoredIdentity;
-  return {
-    identityKey: fromBase64(parsed.identityKey),
-    identityPrivateKey: fromBase64(parsed.identityPrivateKey),
-    signingKey: fromBase64(parsed.signingKey),
-    signingPrivateKey: fromBase64(parsed.signingPrivateKey),
-  };
+  try {
+    const parsed = JSON.parse(raw) as StoredIdentity;
+    return {
+      identityKey: fromBase64(parsed.identityKey),
+      identityPrivateKey: fromBase64(parsed.identityPrivateKey),
+      signingKey: fromBase64(parsed.signingKey),
+      signingPrivateKey: fromBase64(parsed.signingPrivateKey),
+    };
+  } catch {
+    return null;
+  }
 }
 
-/** 数据库主密钥：由系统密钥库生成并保存，JS 层只拿到引用 */
+/**
+ * 数据库主密钥
+ *
+ * Keystore 可用时用 react-native-keychain 保护；不可用时退到安全存储层，
+ * 并明确降级——绝不因为拿不到 DBKEK 就让 App 起不来。
+ */
 export async function getDatabaseKey(): Promise<string> {
-  const existing = await Keychain.getGenericPassword({ service: 'e2ee.dbkey' });
-  if (existing) return existing.password;
+  if (await safeStore.isKeystoreUsable()) {
+    try {
+      const Keychain = require('react-native-keychain');
+      const existing = await Keychain.getGenericPassword({ service: DB_KEY });
+      if (existing?.password) return existing.password;
 
+      const generated = toBase64(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+      await Keychain.setGenericPassword('dbkek', generated, { service: DB_KEY });
+      return generated;
+    } catch {
+      // 落到下面的文件退路
+    }
+  }
+
+  const existing = await safeStore.getItem(DB_KEY);
+  if (existing) return existing;
   const generated = toBase64(globalThis.crypto.getRandomValues(new Uint8Array(32)));
-  await Keychain.setGenericPassword('dbkek', generated, {
-    service: 'e2ee.dbkey',
-    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
+  await safeStore.setItem(DB_KEY, generated);
   return generated;
 }
 
 export async function saveToken(token: string): Promise<void> {
-  await setSecret(SESSION_KEY, token);
+  await safeStore.setItem(SESSION_KEY, token);
 }
 
 export async function loadToken(): Promise<string | null> {
-  return getSecret(SESSION_KEY);
+  return safeStore.getItem(SESSION_KEY);
 }
 
 export async function saveDeviceId(deviceId: string): Promise<void> {
-  await setSecret(DEVICE_ID_KEY, deviceId);
+  await safeStore.setItem(DEVICE_ID_KEY, deviceId);
 }
 
 export async function loadDeviceId(): Promise<string | null> {
-  return getSecret(DEVICE_ID_KEY);
+  return safeStore.getItem(DEVICE_ID_KEY);
 }
 
 /** 彻底清除本地身份与会话：注销、设备丢失时的最终手段 */
 export async function wipeAll(): Promise<void> {
   for (const key of [IDENTITY_KEY, SESSION_KEY, DEVICE_ID_KEY]) {
-    await SecureStore.deleteItemAsync(key).catch(() => undefined);
+    await safeStore.deleteItem(key).catch(() => undefined);
   }
-  await Keychain.resetGenericPassword({ service: 'e2ee.dbkey' }).catch(() => undefined);
+  if (await safeStore.isKeystoreUsable()) {
+    try {
+      const Keychain = require('react-native-keychain');
+      await Keychain.resetGenericPassword({ service: DB_KEY });
+    } catch {
+      // 忽略
+    }
+  }
+  await safeStore.deleteItem(DB_KEY).catch(() => undefined);
 }
 
 /**
  * 预密钥私钥存储
  *
  * SPK/OPK 私钥数量较大且可再生成，存进受数据库主密钥保护的表更安全；
- * 这里用 SecureStore 保存是为了让首版可在不引入加密数据库的情况下跑通。
+ * 这里用安全存储层保存是为了让首版可在不引入加密数据库的情况下跑通。
  */
 export class SecurePreKeyStore implements KeyStore {
   constructor(private identity: LocalIdentity) {}
@@ -107,23 +128,27 @@ export class SecurePreKeyStore implements KeyStore {
   }
 
   async getSignedPreKeyPrivate(keyId: number): Promise<Uint8Array> {
-    const raw = await getSecret(`${SPK_PREFIX}${keyId}`);
+    const raw = await safeStore.getItem(`${SPK_PREFIX}${keyId}`);
     if (!raw) throw new Error(`Keystore: 缺少签名预密钥 ${keyId}`);
     return fromBase64(raw);
   }
 
   async getOneTimePreKeyPrivate(keyId: number): Promise<Uint8Array | undefined> {
-    const raw = await getSecret(`${OPK_PREFIX}${keyId}`);
+    const raw = await safeStore.getItem(`${OPK_PREFIX}${keyId}`);
     return raw ? fromBase64(raw) : undefined;
   }
 
   async consumeOneTimePreKey(keyId: number): Promise<void> {
-    await SecureStore.deleteItemAsync(`${OPK_PREFIX}${keyId}`).catch(() => undefined);
+    await safeStore.deleteItem(`${OPK_PREFIX}${keyId}`).catch(() => undefined);
   }
 }
 
-export async function savePreKeyPrivate(prefix: typeof SPK_PREFIX | typeof OPK_PREFIX, keyId: number, privateKey: Uint8Array): Promise<void> {
-  await setSecret(`${prefix}${keyId}`, toBase64(privateKey));
+export async function savePreKeyPrivate(
+  prefix: typeof SPK_PREFIX | typeof OPK_PREFIX,
+  keyId: number,
+  privateKey: Uint8Array,
+): Promise<void> {
+  await safeStore.setItem(`${prefix}${keyId}`, toBase64(privateKey));
 }
 
 export { SPK_PREFIX, OPK_PREFIX };
