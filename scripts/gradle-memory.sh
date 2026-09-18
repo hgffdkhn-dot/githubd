@@ -6,43 +6,81 @@
 # 默认堆上限不够，会在 :app:collectReleaseDependencies 这类依赖收集阶段
 # 抛 "Java heap space" —— 而且是跑了十几分钟之后才抛，非常浪费时间。
 #
-# 注意：expo prebuild 每次都会重新生成 android/gradle.properties，
-# 所以必须在 prebuild 之后追加，不能只改仓库里的文件。
+# 设计原则：这是"健壮性措施"，不是"正确性门槛"。
+# 找不到 gradle.properties 时绝不阻断构建 —— 改用 GRADLE_OPTS 环境变量兜底，
+# 并打印目录结构供排查。宁可内存配置没生效，也不能让整个 job 白跑。
 #
-set -euo pipefail
+# 用法：bash scripts/gradle-memory.sh <工程目录或 android 目录>
+#
+set -uo pipefail
 
-ANDROID_DIR="${1:-android}"
-PROPS="$ANDROID_DIR/gradle.properties"
+INPUT="${1:-android}"
+HEAP="${GRADLE_HEAP:-4096m}"
 
-if [ ! -f "$PROPS" ]; then
-  echo "未找到 $PROPS，请确认已执行 expo prebuild"
-  exit 1
+echo "=== Gradle 内存配置 ==="
+echo "传入路径：$INPUT"
+
+# 1. 尝试已知布局
+CANDIDATES=(
+  "$INPUT/android/gradle.properties"
+  "$INPUT/gradle.properties"
+  "$INPUT"
+)
+
+PROPS=""
+for candidate in "${CANDIDATES[@]}"; do
+  if [ -f "$candidate" ]; then PROPS="$candidate"; break; fi
+done
+
+# 2. 已知布局都没命中，就递归找一层（最多 4 层，避免扫整个仓库）
+if [ -z "$PROPS" ] && [ -d "$INPUT" ]; then
+  echo "已知布局未命中，递归查找 gradle.properties…"
+  PROPS="$(find "$INPUT" -maxdepth 4 -name gradle.properties -type f 2>/dev/null | head -1)"
 fi
 
-# 已存在就覆盖，避免重复行导致后写的值被先写的覆盖
-apply_prop() {
-  local key="$1"
-  local value="$2"
-  if grep -q "^${key}=" "$PROPS"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$PROPS"
-  else
-    printf '\n%s=%s\n' "$key" "$value" >> "$PROPS"
-  fi
-  echo "  $key=$value"
-}
+if [ -n "$PROPS" ] && [ -f "$PROPS" ]; then
+  echo "写入 → $PROPS"
 
-echo "写入 Gradle 内存配置 → $PROPS"
+  apply_prop() {
+    local key="$1" value="$2"
+    # 用分组保留前缀，避免原值中的 | 等特殊字符破坏 sed 表达式
+    if grep -q "^${key}=" "$PROPS"; then
+      sed -i "s|^\(${key}=\).*|\1${value}|" "$PROPS"
+    else
+      printf '\n%s=%s\n' "$key" "$value" >> "$PROPS"
+    fi
+  }
 
-# 4g 堆 + 独立的 Metaspace 上限；OOM 时留下堆转储便于排查
-apply_prop "org.gradle.jvmargs" "-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8 -XX:+HeapDumpOnOutOfMemoryError"
+  apply_prop "org.gradle.jvmargs" "-Xmx${HEAP} -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8 -XX:+HeapDumpOnOutOfMemoryError"
+  apply_prop "org.gradle.parallel" "false"
+  apply_prop "org.gradle.workers.max" "2"
+  apply_prop "kotlin.compiler.execution.strategy" "in-process"
+  apply_prop "kotlin.incremental" "false"
+  apply_prop "kotlin.daemon.jvmargs" "-Xmx2048m"
 
-# 并行与多 worker 会成倍放大内存占用，CI 上关掉更稳
-apply_prop "org.gradle.parallel" "false"
-apply_prop "org.gradle.workers.max" "2"
+  echo "已写入 gradle.properties："
+  grep -E "^(org\.gradle\.(jvmargs|parallel|workers\.max)|kotlin\.)" "$PROPS" | sed 's/^/    /'
+else
+  echo "警告：未找到 gradle.properties，跳过文件写入（不阻断构建）"
+  echo "当前目录结构："
+  ls -la "$INPUT" 2>/dev/null | head -20 || echo "  $INPUT 不存在"
+  find "$INPUT" -maxdepth 2 -type d 2>/dev/null | head -20 | sed 's/^/    /'
+fi
 
-# Kotlin 编译跑在 Gradle 进程内，避免另起一个 daemon 再吃掉一份内存
-apply_prop "kotlin.compiler.execution.strategy" "in-process"
-apply_prop "kotlin.incremental" "false"
-apply_prop "kotlin.daemon.jvmargs" "-Xmx2048m"
+#
+# 关键兜底：无论文件写入成功与否，都导出 GRADLE_OPTS。
+# --no-daemon 模式下 Gradle 跑在启动它的 JVM 里，GRADLE_OPTS 直接生效，
+# 这条路径完全不依赖任何文件是否存在。
+#
+GRADLE_OPTS_VALUE="-Xmx${HEAP} -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8 -Dorg.gradle.daemon=false"
 
-echo "完成"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "GRADLE_OPTS=$GRADLE_OPTS_VALUE" >> "$GITHUB_ENV"
+  echo "已导出 GRADLE_OPTS 到 GITHUB_ENV"
+else
+  echo "（非 CI 环境，未写入 GITHUB_ENV）"
+fi
+
+echo "GRADLE_OPTS=$GRADLE_OPTS_VALUE"
+echo "=== 完成（堆上限 ${HEAP}）==="
+exit 0

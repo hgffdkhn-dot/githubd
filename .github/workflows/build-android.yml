@@ -104,8 +104,6 @@ jobs:
         if: ${{ github.event.inputs.build_type == 'standalone' }}
         timeout-minutes: 45
         working-directory: apps/mobile/android
-        env:
-          GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon

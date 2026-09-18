@@ -72,8 +72,6 @@ jobs:
       - name: 构建自包含 APK
         timeout-minutes: 45
         working-directory: apps/diagnostic/android
-        env:
-          GRADLE_OPTS: -Dorg.gradle.daemon=false -Xmx512m
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon

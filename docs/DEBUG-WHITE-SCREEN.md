@@ -101,7 +101,11 @@ React Native Android 构建有 600+ 个 task，GitHub runner 上的 Gradle 默�
 
 注意：**必须在 `expo prebuild` 之后写入**，因为 prebuild 会重新生成 `gradle.properties`，提前写会被覆盖。脚本用"存在则替换"的方式写入，重复执行不会产生重复行。
 
-如果 4g 仍然不够，把脚本里的 `Xmx4096m` 调到 `6144m`；runner 内存不足时再考虑启用 Gradle 构建缓存或换更大规格的 runner。
+**脚本不会因为找不到文件而阻断构建。** 路径定位失败时，它会退而用 `GRADLE_OPTS` 环境变量兜底（`--no-daemon` 模式下 Gradle 跑在启动它的 JVM 里，该变量直接生效），绝不因为一个健壮性措施让整个 job 白跑。可通过 `GRADLE_HEAP` 环境变量调整堆上限，默认 4096m。
+
+⚠️ 踩过的坑：如果在构建步骤上写 `env: GRADLE_OPTS: -Xmx512m`，**步骤级 env 会覆盖脚本写入 `GITHUB_ENV` 的值**，把堆压回 512m 等于没配。已移除，不要再加回来。
+
+如果 4g 仍然不够，设 `GRADLE_HEAP: 6144m`；runner 内存不足时再考虑启用 Gradle 构建缓存或换更大规格的 runner。
 
 ## 抓日志的正确姿势
 
