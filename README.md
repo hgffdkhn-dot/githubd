@@ -46,6 +46,23 @@ npx expo run:ios      # 或 npx expo run:android
 
 **真机最常见的坑**：手机上的 `localhost` 指手机自己，必须填电脑的局域网 IP；iOS ATS 与 Android 9+ 默认拦截明文 HTTP，要么用 HTTPS，要么确认 `app.json` 里的 ATS 例外与 `usesCleartextTraffic` 已生效。
 
+## 演示模式（无需服务端）
+
+想在没租服务器时验证 UI，可用演示模式：**登录页底部「演示模式（无需服务器）」→ 输入演示口令 → 任意账号登录即可**。
+
+演示模式下：不加密、不联网、不生成密钥，消息为本地假数据，对方会自动回复。**全程显示红色"演示模式"横幅**，避免误判为真实加密会话。
+
+### ⚠️ 正式发布前必须移除
+
+演示模式绕过端到端加密，留在生产版本是重大安全与信任问题。发布前请：
+
+1. 删除 `apps/mobile/src/dev/`
+2. 删除 `apps/mobile/src/ui/DemoBanner.tsx`
+3. 移除 `ChatProvider.tsx` 中的 `demo` / `enterDemo` / `leaveDemo`
+4. 移除三个页面中 `DemoBanner` 的引用与登录页演示入口
+
+也可保留代码但在 release 构建中关闭入口（`__DEV__` 判断 + 构建期开关），但**默认关闭**是底线。
+
 ## GitHub Actions
 
 | 工作流 | 触发 | 作用 |

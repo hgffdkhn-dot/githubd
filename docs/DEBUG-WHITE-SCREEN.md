@@ -163,6 +163,30 @@ expo install react-native-quick-base64   # ← 容易漏
 
 登录页的"上次启动异常"详情加了 `selectable`，长按即可选中复制——不用再连电脑捞日志，也不用截图转述。
 
+## 界面显示 "Network request failed"
+
+**这是好消息**：说明白屏已解决，App 正常跑起来了，只是连不上服务端。
+
+### 最常见成因：地址是 localhost
+
+`EXPO_PUBLIC_API_URL` 在**构建时**被烘焙进 bundle。若构建时没配置仓库变量，fallback 是 `https://localhost:8787` —— 而**手机上的 localhost 指手机自己**，那里没有服务端，必然连接失败。
+
+### 修法
+
+三种，任选：
+
+1. **运行时改（推荐，免重新打包）**：登录页顶部显示当前服务器地址，点"修改"填入电脑的局域网 IP，保存即生效
+2. 构建前在仓库 **Settings → Secrets and variables → Actions → Variables** 添加 `EXPO_PUBLIC_API_URL = http://<电脑局域网IP>:8787`
+3. 本地构建时设 `apps/mobile/.env`
+
+查看电脑 IP：macOS `ipconfig getifaddr en0`，Linux `hostname -I`，Windows `ipconfig`。
+
+### 配套改进
+
+- `src/network/serverConfig.ts`：地址持久化，运行时可改，不必重新打包
+- `ApiClient` 捕获连接失败，给出**带地址与排查提示**的错误，而不是一句 `Network request failed`
+- 登录页常驻显示当前服务器地址
+
 ## CI 报 Unable to resolve module …/legacy
 
 ### 关键教训：Metro 在打包期静态解析 require()，try/catch 完全没用

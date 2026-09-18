@@ -14,6 +14,7 @@ import {
   type PreKeyBundle,
   type EnvelopeDto,
 } from '@e2ee/protocol';
+import { describeNetworkFailure } from './serverConfig.js';
 
 export interface AuthResult {
   userId: string;
@@ -27,7 +28,15 @@ export class ApiClient {
   private async request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (token) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    } catch (error) {
+      // 原生 fetch 对连接失败只给一句 "Network request failed"，看不出原因
+      throw new Error(describeNetworkFailure(this.baseUrl));
+    }
+
     if (!response.ok) {
       throw new Error(`API ${path} 失败: ${response.status}`);
     }

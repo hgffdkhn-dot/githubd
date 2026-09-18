@@ -13,9 +13,10 @@ import {
 } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useChat } from '../src/chat/ChatProvider.js';
+import { DemoBanner } from '../src/ui/DemoBanner.js';
 
 export default function ContactsScreen() {
-  const { search } = useChat();
+  const { search, demo, leaveDemo } = useChat();
   const router = useRouter();
   const theme = useTheme();
 
@@ -39,6 +40,8 @@ export default function ContactsScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+      {demo ? <DemoBanner onExit={() => void leaveDemo()} /> : null}
+
       <Surface style={styles.searchBar} elevation={2}>
         <TextInput
           label="搜索用户名"

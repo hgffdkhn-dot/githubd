@@ -12,10 +12,11 @@ import {
 import { useLocalSearchParams } from 'expo-router';
 import { useChat } from '../../src/chat/ChatProvider.js';
 import type { DecryptedMessage } from '../../src/chat/ChatEngine.js';
+import { DemoBanner } from '../../src/ui/DemoBanner.js';
 
 export default function ChatScreen() {
   const { userId, username } = useLocalSearchParams<{ userId: string; username?: string }>();
-  const { engine, messages, send } = useChat();
+  const { engine, messages, send, demo, leaveDemo } = useChat();
   const theme = useTheme();
 
   const [draft, setDraft] = useState('');
@@ -58,6 +59,8 @@ export default function ChatScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={80}
     >
+      {demo ? <DemoBanner onExit={() => void leaveDemo()} /> : null}
+
       {safetyNumber ? (
         <Surface style={styles.safetyBar} elevation={1}>
           <Chip icon="shield-check" compact>
