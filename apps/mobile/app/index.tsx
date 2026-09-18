@@ -39,6 +39,9 @@ export default function LoginScreen() {
   const [devPass, setDevPass] = useState('');
   const [devError, setDevError] = useState<string | null>(null);
 
+  const scrollRef = React.useRef<ScrollView>(null);
+  const devCardRef = React.useRef<View>(null);
+
   // 上次崩溃的原因直接显示在界面上，省去连电脑捞日志
   React.useEffect(() => {
     loadLastError().then(setCrash);
@@ -77,6 +80,24 @@ export default function LoginScreen() {
     await enterDemo();
   }
 
+  /** 展开后滚到演示卡片：它在页面底部，不滚的话确认键在视口外 */
+  function toggleDev() {
+    const next = !showDev;
+    setShowDev(next);
+    if (!next) return;
+    setTimeout(() => {
+      try {
+        devCardRef.current?.measure?.(
+          (_x: number, _y: number, _w: number, _h: number, _px: number, py: number) => {
+            scrollRef.current?.scrollTo({ y: Math.max(0, py - 140), animated: true });
+          },
+        );
+      } catch {
+        // 测量失败不影响使用
+      }
+    }, 150);
+  }
+
   const broken = status === 'broken';
 
   return (
@@ -85,7 +106,11 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {demo ? <DemoBanner onExit={() => void leaveDemo()} /> : null}
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         <Surface style={styles.hero} elevation={1}>
           <Text variant="headlineMedium" style={styles.title}>
             端到端加密聊天
@@ -243,35 +268,51 @@ export default function LoginScreen() {
         {/* 演示入口：折叠在底部，避免普通用户误入 */}
         {!demo ? (
           <View style={styles.devRow}>
-            <Button compact mode="text" onPress={() => setShowDev((v) => !v)}>
+            <Button compact mode="text" onPress={toggleDev}>
               {showDev ? '隐藏演示模式' : '演示模式（无需服务器）'}
             </Button>
 
             {showDev ? (
-              <Surface style={styles.card} elevation={1}>
-                <Text variant="bodySmall" style={styles.hint}>
-                  需要演示口令。进入后不加密、不联网，仅供验证界面，正式发布前应移除。
-                </Text>
-                <TextInput
-                  label="演示口令"
-                  mode="outlined"
-                  value={devPass}
-                  onChangeText={setDevPass}
-                  secureTextEntry
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  dense
-                  style={styles.input}
-                />
-                {devError ? (
-                  <Text variant="bodySmall" style={{ color: theme.colors.error, marginBottom: 8 }}>
-                    {devError}
+              <View ref={devCardRef} collapsable={false}>
+                <Surface style={styles.devCard} elevation={1}>
+                  <Text variant="bodySmall" style={styles.hint}>
+                    需要演示口令。进入后不加密、不联网，仅供验证界面。
                   </Text>
-                ) : null}
-                <Button mode="contained" compact onPress={unlockDev}>
-                  进入演示模式
-                </Button>
-              </Surface>
+                  {/* 输入框与按钮同行：按钮始终在视口内，不用滚动去找 */}
+                  <View style={styles.devForm}>
+                    <TextInput
+                      label="演示口令"
+                      mode="outlined"
+                      value={devPass}
+                      onChangeText={setDevPass}
+                      secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      dense
+                      numberOfLines={1}
+                      multiline={false}
+                      returnKeyType="go"
+                      onSubmitEditing={unlockDev}
+                      blurOnSubmit
+                      style={styles.devInput}
+                    />
+                    <Button
+                      mode="contained"
+                      compact
+                      onPress={unlockDev}
+                      style={styles.devBtn}
+                      labelStyle={styles.devBtnLabel}
+                    >
+                      进入
+                    </Button>
+                  </View>
+                  {devError ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.error }}>
+                      {devError}
+                    </Text>
+                  ) : null}
+                </Surface>
+              </View>
             ) : null}
           </View>
         ) : null}
@@ -300,7 +341,13 @@ const styles = StyleSheet.create({
   hint: { opacity: 0.65, marginBottom: 8, lineHeight: 17 },
   input: { marginBottom: 12 },
   button: { marginTop: 4, marginBottom: 4 },
-  devRow: { alignItems: 'center', gap: 8, marginTop: 4 },
+  devRow: { alignItems: 'center', gap: 8, marginTop: 4, width: '100%' },
+  devCard: { padding: 12, borderRadius: 12, width: '100%' },
+  // 高度写死，避免 Paper 的 outlined 输入框在不同主题下撑得过高
+  devInput: { flex: 1, height: 46, marginBottom: 0 },
+  devForm: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  devBtn: { justifyContent: 'center', marginTop: 4 },
+  devBtnLabel: { fontSize: 13, marginVertical: 0 },
   noteRow: { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: 8 },
   note: { flex: 1, opacity: 0.7, lineHeight: 18, paddingTop: 8 },
   crashMeta: { opacity: 0.6, marginTop: 2 },
