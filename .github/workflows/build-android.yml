@@ -78,6 +78,11 @@ jobs:
       - name: 校验入口文件可解析
         run: node scripts/check-entry.mjs apps/mobile
 
+      # Metro 在打包期静态解析 require() 字面量，try/catch 挡不住模块不存在。
+      # 在构建前扫一遍，避免等四分钟 Gradle 才发现。
+      - name: 校验模块引用可解析
+        run: node scripts/check-requires.mjs apps/mobile
+
       - name: 生成原生工程
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --non-interactive --clean

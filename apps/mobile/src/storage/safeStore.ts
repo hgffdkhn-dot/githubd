@@ -1,90 +1,138 @@
 /**
  * 安全存储层（带自愈降级）
  *
- * 背景：某些运行环境（虚拟沙箱/双开容器、ROOT + Hook 环境、定制 ROM）里
- * Android Keystore 不可用或残缺。expo-secure-store 与 react-native-keychain
- * 都基于 Keystore，一旦调用会发生**原生层硬崩溃**——
- * JS 的 try/catch 拦不住，表现就是"点下去直接白屏"。
+ * 背景：需要一种不依赖 Keystore 的持久化手段，用于记录"Keystore 是否崩溃"，
+ * 以及在 Keystore 不可用时接管键值存储。
  *
- * 对策：崩溃自愈（crash-marker 驱动）
- *   1. 首次使用 Keystore 前，先用文件写一个"正在试探"标记
- *   2. 试探成功 → 清除标记，正常用 Keystore
- *   3. 若发生硬崩溃 → 标记留在磁盘上没被清除
- *   4. 下次启动看到标记 → 判定 Keystore 不安全，**永久绕开**，改用文件存储
- *
- * 这样即使无法捕获崩溃，也能在第二次启动后自动恢复可用。
+ * ⚠️ 关键教训：Metro 在**打包期**静态解析 require() 的字符串字面量。
+ * try/catch 包住 require 完全没有用 —— 模块不存在会在 bundle 阶段直接失败，
+ * 根本走不到运行时。所以这里**只 require 确定存在的 'expo-file-system'**，
+ * API 差异一律在运行时用特性检测处理，绝不再 require 可能不存在的子路径。
  */
 
 const MARKER_FILE = 'e2ee.keystore-probe';
 const STORE_FILE = 'e2ee.kv.json';
 
-interface FileSystemModule {
-  documentDirectory: string | null;
-  writeAsStringAsync: (uri: string, text: string) => Promise<void>;
-  readAsStringAsync: (uri: string) => Promise<string>;
-  deleteAsync: (uri: string, options?: { idempotent?: boolean }) => Promise<void>;
+/** 读写能力抽象：屏蔽新旧两代 FileSystem API 的差异 */
+interface FsAdapter {
+  read: (name: string) => Promise<string | null>;
+  write: (name: string, text: string) => Promise<void>;
+  remove: (name: string) => Promise<void>;
 }
 
-// 动态 require：这是兜底层，自己绝不能在加载期抛错
-function fileSystem(): FileSystemModule | null {
+const memory = new Map<string, string>();
+let adapter: FsAdapter | null | undefined;
+
+/**
+ * 单一 require 入口 + 运行时特性检测
+ *
+ * 支持两代 API：
+ *  - 旧版：writeAsStringAsync / readAsStringAsync / deleteAsync + documentDirectory
+ *  - 新版：File 类（.write / .text / .delete）+ Directory.uri
+ */
+function buildAdapter(): FsAdapter | null {
+  let mod: Record<string, unknown>;
   try {
-    // SDK 52 仍导出旧版 API；若被移除则尝试 legacy 入口
-    let mod: FileSystemModule | null = null;
-    try {
-      mod = require('expo-file-system') as FileSystemModule;
-    } catch {
-      mod = require('expo-file-system/legacy') as FileSystemModule;
-    }
-    if (!mod || typeof mod.writeAsStringAsync !== 'function') return null;
-    return mod;
+    mod = require('expo-file-system') as Record<string, unknown>;
   } catch {
     return null;
   }
+
+  const dir =
+    (typeof mod.documentDirectory === 'string' ? mod.documentDirectory : null) ??
+    // 新版用 Paths.document（Directory 对象）
+    (() => {
+      const paths = mod.Paths as { document?: { uri?: string } } | undefined;
+      return paths?.document?.uri ?? null;
+    })();
+
+  if (!dir) return null;
+  const base = dir.endsWith('/') ? dir : `${dir}/`;
+
+  const legacy = mod as {
+    writeAsStringAsync?: (uri: string, text: string) => Promise<void>;
+    readAsStringAsync?: (uri: string) => Promise<string>;
+    deleteAsync?: (uri: string, opts?: { idempotent?: boolean }) => Promise<void>;
+  };
+  const FileCtor = mod.File as
+    | (new (uri: string) => {
+        write: (t: string) => Promise<void>;
+        text: () => Promise<string>;
+        delete: () => Promise<void>;
+      })
+    | undefined;
+
+  const hasLegacy =
+    typeof legacy.writeAsStringAsync === 'function' && typeof legacy.readAsStringAsync === 'function';
+  const hasNew = typeof FileCtor === 'function';
+
+  if (!hasLegacy && !hasNew) return null;
+
+  return {
+    async read(name) {
+      const uri = `${base}${name}`;
+      try {
+        if (hasLegacy) return await legacy.readAsStringAsync!(uri);
+        return await new FileCtor!(uri).text();
+      } catch {
+        return null; // 文件不存在是正常情况
+      }
+    },
+    async write(name, text) {
+      const uri = `${base}${name}`;
+      if (hasLegacy) {
+        await legacy.writeAsStringAsync!(uri, text);
+        return;
+      }
+      await new FileCtor!(uri).write(text);
+    },
+    async remove(name) {
+      const uri = `${base}${name}`;
+      try {
+        if (hasLegacy) {
+          await legacy.deleteAsync!(uri, { idempotent: true });
+          return;
+        }
+        await new FileCtor!(uri).delete();
+      } catch {
+        // 忽略
+      }
+    },
+  };
 }
 
-/** 文件系统不可用时的最后退路：只活在内存里，重启即丢，但保证 App 不崩 */
-const memoryStore = new Map<string, string>();
-let memoryMarker: string | null = null;
-
-function docPath(name: string): string | null {
-  const fs = fileSystem();
-  if (!fs?.documentDirectory) return null;
-  return `${fs.documentDirectory}${name}`;
+function fs(): FsAdapter | null {
+  if (adapter === undefined) adapter = buildAdapter();
+  return adapter;
 }
 
 async function readFile(name: string): Promise<string | null> {
-  const path = docPath(name);
-  if (!path) return name === MARKER_FILE ? memoryMarker : (memoryStore.get(name) ?? null);
-  try {
-    return await fileSystem()!.readAsStringAsync(path);
-  } catch {
-    return null;
-  }
+  const a = fs();
+  if (!a) return memory.get(name) ?? null;
+  return a.read(name);
 }
 
 async function writeFile(name: string, text: string): Promise<void> {
-  const path = docPath(name);
-  if (!path) {
-    if (name === MARKER_FILE) memoryMarker = text;
-    else memoryStore.set(name, text);
+  const a = fs();
+  if (!a) {
+    memory.set(name, text);
     return;
   }
-  await fileSystem()!.writeAsStringAsync(path, text);
+  await a.write(name, text);
 }
 
 async function deleteFile(name: string): Promise<void> {
-  const path = docPath(name);
-  if (!path) {
-    if (name === MARKER_FILE) memoryMarker = null;
-    else memoryStore.delete(name);
+  const a = fs();
+  if (!a) {
+    memory.delete(name);
     return;
   }
-  try {
-    await fileSystem()!.deleteAsync(path, { idempotent: true });
-  } catch {
-    // 忽略
-  }
+  await a.remove(name);
 }
+
+// ---------------------------------------------------------------------------
+// 崩溃自愈：标记文件驱动
+// ---------------------------------------------------------------------------
 
 /** 上次启动是否在试探 Keystore 时崩溃（标记没被清除 = 崩了） */
 export async function didKeystoreCrash(): Promise<boolean> {
@@ -112,7 +160,7 @@ export async function isKeystoreUsable(): Promise<boolean> {
   return keystoreUsable;
 }
 
-/** 供设置界面手动禁用（例如用户在已知坏环境里主动降级） */
+/** 供界面手动禁用（例如用户在已知坏环境里主动降级） */
 export async function disableKeystore(): Promise<void> {
   keystoreUsable = false;
   await writeFile(MARKER_FILE, 'disabled-manually');
@@ -199,8 +247,8 @@ export async function deleteItem(key: string): Promise<void> {
   await fileDelete(key);
 }
 
-/** 当前实际使用的后端，供界面提示用户安全级别 */
+/** 当前实际使用的后端，供界面提示安全级别 */
 export async function currentBackend(): Promise<'keystore' | 'file' | 'memory'> {
   if (await isKeystoreUsable()) return 'keystore';
-  return docPath(STORE_FILE) ? 'file' : 'memory';
+  return fs() ? 'file' : 'memory';
 }

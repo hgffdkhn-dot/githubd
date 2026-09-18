@@ -124,6 +124,34 @@ cd android && ./gradlew clean && cd ..
 
 真正值得做的"最小化验证"，是诊断工程这条路径：同样的构建流程、同样的依赖，只把 UI 换成 Hello World，从而把问题范围收窄到"环境"还是"代码"。
 
+## CI 报 Unable to resolve module …/legacy
+
+### 关键教训：Metro 在打包期静态解析 require()，try/catch 完全没用
+
+这是最容易踩的认知陷阱。看这段"看起来很稳"的代码：
+
+```js
+try {
+  mod = require('expo-file-system');
+} catch {
+  mod = require('expo-file-system/legacy');   // ← 打包期就炸了
+}
+```
+
+直觉上以为 try/catch 能兜底，**实际上不能**：Metro 在 bundle 阶段就扫描所有 `require('字面量')` 并做静态解析，模块不存在立刻报 `Unable to resolve module`，根本走不到运行时。要等四分钟 Gradle 才暴露。
+
+**正确写法**：只引用确定存在的包，API 差异在运行时用特性检测处理：
+
+```js
+const mod = require('expo-file-system');          // 只有一个入口
+const hasLegacy = typeof mod.writeAsStringAsync === 'function';
+const hasNew = typeof mod.File === 'function';    // 新版 File/Directory API
+```
+
+本项目 `safeStore.ts` 与 `probeStore.ts` 已按此改造，同时兼容新旧两代 FileSystem API（旧版 `writeAsStringAsync`，新版 `File` 类）。
+
+**防线**：`scripts/check-requires.mjs` 在构建前扫描所有 `require()`/`import` 字面量并验证可解析，秒级失败。已接入两个构建工作流。
+
 ## CI 报 "Error on ZipFile unknown archive"
 
 发生在 `android-actions/setup-android`：该 action 会连带安装 Android Emulator（体积最大的那个包），下载中断就报这个错，整个 job 直接失败。构建 APK **用不到模拟器**。
