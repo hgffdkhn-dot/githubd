@@ -35,6 +35,7 @@ import {
   saveMyUid,
   loadMyUid,
   savePreKeyPrivate,
+  wipeAll,
   SecurePreKeyStore,
   SPK_PREFIX,
   OPK_PREFIX,
@@ -164,7 +165,35 @@ export class ChatEngine {
       });
       this.profiles.setTokenProvider(async () => this.token);
     }
-    return this.profiles.loadOwn(this.userId);
+    const profile = await this.profiles.loadOwn(this.userId);
+
+    // 补 UID：老账号（UID 功能上线前注册的）本地没缓存，
+    // 服务端在返回资料时会一并给出，这里存下来供后续直接使用
+    const uid = (profile as { uid?: string | null }).uid;
+    if (uid && uid !== this.myUid) {
+      this.myUid = uid;
+      await saveMyUid(uid);
+    }
+    return profile;
+  }
+
+  /**
+   * 确保拿到自己的 UID
+   *
+   * 三种情况需要它：
+   *  1. 老账号：注册时服务端还没有 UID 功能，本地无缓存
+   *  2. 重装应用：本地缓存清空，但服务端 UID 还在
+   *  3. 会话恢复路径：restoreSession 只恢复 token，不重新登录
+   */
+  async ensureUid(): Promise<string | null> {
+    if (this.myUid) return this.myUid;
+    if (!this.token) return null;
+    try {
+      await this.loadMyProfile();
+    } catch {
+      // 拿不到 UID 不影响聊天，降级为不显示
+    }
+    return this.myUid;
   }
 
   async saveMyProfile(
@@ -272,6 +301,34 @@ export class ChatEngine {
     const result = await this.api.login({ username, password, deviceId: this.deviceId, identity: this.identity });
     await this.completeAuth(result);
     await this.rotateSignedPreKeyIfNeeded();
+  }
+
+  /**
+   * 退出账号：清除本机身份、会话与 UID，回到未登录状态
+   *
+   * ⚠️ 首版不做密钥备份，退出后历史会话无法恢复。
+   * 服务端上的账号还在，可以用同一用户名重新注册（会生成新身份密钥），
+   * 但旧会话因密钥已丢失而永久无法解密 —— UI 必须提前告知。
+   */
+  async logout(): Promise<void> {
+    this.stopPresence();
+    this.stream?.close?.();
+    this.stream = null;
+    this.manager = null;
+    this.profiles = null;
+    this.presence = null;
+    this.listeners.clear();
+
+    await wipeAll();
+
+    this.token = '';
+    this.identity = null;
+    this.userId = '';
+    this.deviceId = '';
+    this.myUid = null;
+    this.nextOpkId = 1;
+    this.spkId = 1;
+    this.spkGeneratedAt = 0;
   }
 
   async restoreSession(): Promise<boolean> {

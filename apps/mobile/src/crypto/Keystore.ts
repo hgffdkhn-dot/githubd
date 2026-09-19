@@ -108,9 +108,14 @@ export async function loadDeviceId(): Promise<string | null> {
   return safeStore.getItem(DEVICE_ID_KEY);
 }
 
-/** 彻底清除本地身份与会话：注销、设备丢失时的最终手段 */
+/**
+ * 彻底清除本地身份与会话：注销、设备丢失时的最终手段
+ *
+ * ⚠️ 首版不做密钥备份，所以 wipeAll 之后**历史会话无法恢复**——
+ * 这是有意的安全取舍（私钥不出本机），UI 必须在退出前明确告知用户。
+ */
 export async function wipeAll(): Promise<void> {
-  for (const key of [IDENTITY_KEY, SESSION_KEY, DEVICE_ID_KEY]) {
+  for (const key of [IDENTITY_KEY, SESSION_KEY, DEVICE_ID_KEY, MY_UID_KEY]) {
     await safeStore.deleteItem(key).catch(() => undefined);
   }
   if (await safeStore.isKeystoreUsable()) {

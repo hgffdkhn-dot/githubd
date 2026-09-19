@@ -18,6 +18,14 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <Surface style={styles.card} elevation={1}>
           <List.Item
+            title="账号设置"
+            description="UID、退出账号"
+            left={(p) => <List.Icon {...p} icon="account-cog" />}
+            right={(p) => <List.Icon {...p} icon="chevron-right" />}
+            onPress={() => router.push('/settings/account')}
+          />
+          <Divider />
+          <List.Item
             title="个人主页"
             description="头像、昵称、个人简介"
             left={(p) => <List.Icon {...p} icon="account-edit" />}

@@ -23,6 +23,7 @@ export function AppRoutes() {
       <Stack.Screen name="index" options={{ title: '登录' }} />
       <Stack.Screen name="contacts" options={{ title: '联系人' }} />
       <Stack.Screen name="settings" options={{ title: '设置' }} />
+      <Stack.Screen name="settings/account" options={{ title: '账号设置' }} />
       <Stack.Screen name="settings/profile" options={{ title: '个人主页' }} />
       <Stack.Screen name="settings/appearance" options={{ title: '外观' }} />
       <Stack.Screen name="settings/privacy" options={{ title: '隐私' }} />

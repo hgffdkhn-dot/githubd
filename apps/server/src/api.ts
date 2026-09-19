@@ -336,7 +336,13 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
     handler: async (ctx, req, _res, _body) => {
       const { userId } = authenticate(req, ctx);
       const profile = ctx.store.getProfile(userId);
-      return { profile: profile ?? { userId, visibility: 'friends', updatedAt: 0 } };
+      // 带上 uid：老账号（UID 功能上线前注册的）本地没缓存过 UID，
+      // 只能靠这个接口补回来，否则个人主页永远显示"—"
+      const user = ctx.store.findUserById(userId);
+      return {
+        profile: profile ?? { userId, visibility: 'friends', updatedAt: 0 },
+        uid: user?.uid ?? null,
+      };
     },
   },
   {

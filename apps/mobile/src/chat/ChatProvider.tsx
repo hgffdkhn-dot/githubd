@@ -33,6 +33,10 @@ export interface EngineLike {
   loadPeerProfile(userId: string): Promise<OwnProfileView>;
   /** 自己的 UID，无服务端时（演示模式）返回 null */
   readonly uid: string | null;
+  /** 确保拿到 UID：老账号/重装/会话恢复时本地可能没有，需向服务端补取 */
+  ensureUid(): Promise<string | null>;
+  /** 退出账号：清除本机身份与会话 */
+  logout(): Promise<void>;
   // 在线状态
   startPresence(shareOnline: boolean): Promise<void>;
   setPresenceSharing(value: boolean): void;
@@ -55,6 +59,7 @@ interface ChatContextValue {
   restoreServer: () => Promise<void>;
   enterDemo: () => Promise<void>;
   leaveDemo: () => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -205,6 +210,24 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setDemo(true);
         engine?.stop();
         setEngine(new MockEngine());
+      },
+      async logout() {
+        // 先停心跳再清数据，否则清理过程中的心跳会重建在线记录
+        engine?.stop();
+        try {
+          await engine?.logout();
+        } catch (e) {
+          void recordError('logout', e);
+          throw e;
+        }
+        setMessages([]);
+        setStatus('guest');
+        setError(null);
+        setDemo(false);
+        started.current = false;
+        // 引擎内部状态已清，重建一个干净的，让下次登录从头开始
+        const url = serverUrl ?? (await getServerUrl());
+        setEngine(new ChatEngine(url));
       },
       async leaveDemo() {
         const url = serverUrl ?? (await getServerUrl());

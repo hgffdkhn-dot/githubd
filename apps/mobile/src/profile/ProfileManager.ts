@@ -44,8 +44,10 @@ export class ProfileManager {
     private readonly identity: { identityPrivateKey: Uint8Array },
   ) {}
 
-  /** 读取自己的资料（服务端只存密文，本地解开） */
-  async loadOwn(userId: string): Promise<ResolvedProfile & { visibility: 'friends' | 'public' }> {
+  /** 读取自己的资料（服务端只存密文，本地解开），顺带带回 UID */
+  async loadOwn(
+    userId: string,
+  ): Promise<ResolvedProfile & { visibility: 'friends' | 'public'; uid?: string | null }> {
     const dto = await this.api.getMyProfile(await this.token());
     if (dto.visibility === 'public' && dto.publicFields) {
       const name = dto.publicFields.displayName || '';
@@ -56,13 +58,16 @@ export class ProfileManager {
         avatarInitial: initialOf(name, '?'),
         visibility: 'public',
         locked: false,
+        uid: dto.uid ?? null,
       };
     }
     const payload = dto.encrypted
       ? await openProfile(ownProfileKey(this.identity.identityPrivateKey), dto.encrypted)
       : null;
 
-    if (!payload) return { ...emptyProfile(userId), visibility: dto.visibility };
+    if (!payload) {
+      return { ...emptyProfile(userId), visibility: dto.visibility, uid: dto.uid ?? null };
+    }
     return {
       displayName: payload.displayName,
       bio: payload.bio,
@@ -70,6 +75,7 @@ export class ProfileManager {
       avatarInitial: payload.avatarInitial || initialOf(payload.displayName, '?'),
       visibility: dto.visibility,
       locked: false,
+      uid: dto.uid ?? null,
     };
   }
 

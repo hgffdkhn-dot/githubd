@@ -20,6 +20,8 @@ export interface AuthResult {
   userId: string;
   deviceId: string;
   token: string;
+  /** 服务端分配的 6 位 UID；老版本服务端可能不返回 */
+  uid?: string;
 }
 
 export class ApiClient {
@@ -204,8 +206,13 @@ export class ApiClient {
   // ------------------------------------------------------------------
 
   async getMyProfile(token: string): Promise<OwnProfileDto> {
-    const result = await this.request<{ profile: OwnProfileDto }>('/v1/profile', {}, token);
-    return result.profile;
+    const result = await this.request<{ profile: OwnProfileDto; uid?: string | null }>(
+      '/v1/profile',
+      {},
+      token,
+    );
+    // 老账号本地没缓存 UID，服务端会在读取资料时一并给出
+    return { ...result.profile, uid: result.uid ?? result.profile.uid ?? null };
   }
 
   async putMyProfile(token: string, body: PutProfileBody): Promise<{ updatedAt: number }> {
@@ -267,6 +274,8 @@ export interface PresenceEntry {
 
 export interface OwnProfileDto {
   userId: string;
+  /** 服务端返回的 UID，可能为 null（老账号且服务端过旧） */
+  uid?: string | null;
   visibility: 'friends' | 'public';
   encrypted?: { nonce: string; ciphertext: string };
   publicFields?: { displayName: string; bio: string };

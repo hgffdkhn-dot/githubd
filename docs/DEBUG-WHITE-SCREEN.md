@@ -187,6 +187,46 @@ expo install react-native-quick-base64   # ← 容易漏
 - `ApiClient` 捕获连接失败，给出**带地址与排查提示**的错误，而不是一句 `Network request failed`
 - 登录页常驻显示当前服务器地址
 
+## 清除应用数据后注册报"地址指向了本机"
+
+### 症状
+
+清除应用数据 → 重新打开 → 注册，提示"服务器地址指向了本机，请检查配置"。
+
+### 根因
+
+地址取值链上出现了 `localhost`，而**手机上的 localhost 指手机自己**，
+永远连不上服务端。
+
+两个因素叠加：
+
+1. 清数据后本地覆盖值没了，回退到构建时烘焙的 `BUILTIN_SERVER`
+2. `process.env.EXPO_PUBLIC_API_URL ?? DEFAULT_SERVER` 里的 **`??`
+   只对 null/undefined 兜底，空字符串会原样通过** ——
+   构建时若该变量被设成空串，兜底就失效了
+
+### 修法
+
+出口统一过 `normalizeServerUrl()`：空值、`localhost`、`127.0.0.1`、
+`0.0.0.0`、格式非法的地址，一律换回 `DEFAULT_SERVER`。
+
+写入本地时也归一化，避免把无效地址存进去。
+
+### 防线
+
+`apps/mobile/test/serverConfig.test.ts`，5 项，已接入构建工作流：
+
+- 空值一律回退
+- localhost/127.0.0.1/0.0.0.0 必须被换掉
+- 格式非法（`47.239.14.144:8787` 这种没写协议的）回退
+- 正常地址原样保留
+- **默认服务器地址本身不能是本机地址**（防止改 DEFAULT_SERVER 时改回去）
+
+### 教训
+
+`??` 不是万能兜底，**空字符串会穿透**。凡是"配置缺失就用默认值"的场景，
+都要显式判断空串，而不是只靠 `??`。
+
 ## 界面报 `Property 'X' doesn't exist`（ReferenceError）
 
 ### 症状

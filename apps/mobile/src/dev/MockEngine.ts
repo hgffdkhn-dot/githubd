@@ -50,6 +50,18 @@ export class MockEngine {
   private currentUser = '';
   /** 演示模式没有真实 UID，用稳定派生值占位 */
   readonly uid = stableUid('demo-self');
+
+  async ensureUid(): Promise<string | null> {
+    return this.uid;
+  }
+
+  /** 演示模式没有真实账号，退出只需清掉本地假数据 */
+  async logout(): Promise<void> {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
+    this.listeners.clear();
+    this.currentUser = '';
+  }
   private replyIndex = 0;
 
   onMessage(listener: (message: DecryptedMessage) => void): () => void {

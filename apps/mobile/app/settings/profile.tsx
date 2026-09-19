@@ -30,6 +30,7 @@ export default function ProfileSettingsScreen() {
 
   useEffect(() => {
     if (!engine) return;
+    // 先取本地缓存，让界面立刻有内容（哪怕是"—"）
     setMyUid(engine.uid);
     engine
       .loadMyProfile()
@@ -38,6 +39,8 @@ export default function ProfileSettingsScreen() {
         setBio(p.bio);
         setVisibility(p.visibility);
         setAvatarBg(p.avatarBg);
+        // 老账号的 UID 只有在读取资料时才从服务端补回来
+        setMyUid((p as { uid?: string | null }).uid ?? engine.uid ?? null);
       })
       .catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));

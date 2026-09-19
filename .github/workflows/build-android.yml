@@ -83,6 +83,10 @@ jobs:
       # 在构建前扫一遍，避免等四分钟 Gradle 才发现。
       - name: 校验模块引用可解析
         run: node scripts/check-requires.mjs apps/mobile
+      # 纯逻辑测试（不依赖 RN 原生模块），例如服务器地址兜底
+      - name: 运行客户端纯逻辑测试
+        run: npx tsx --test apps/mobile/test/*.test.ts
+
       # Metro 不做类型检查，import 漏名字会构建成功但运行时崩
       # （ReferenceError: Property 'X' doesn't exist）。构建前扫一遍。
       - name: 校验标识符均已导入

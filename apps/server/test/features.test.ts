@@ -271,3 +271,57 @@ test('内存维护：陈旧在线状态会被回收', async () => {
   const result = store.cleanup();
   assert.equal(result.presence, 1, '超过 90 天未活跃的在线记录应被回收');
 });
+
+test('UID：读取个人资料时会一并返回，供老账号补回 UID', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+
+  const alice = await register(base, `alice-${Date.now()}`);
+  assert.match(alice.uid, /^\d{6}$/);
+
+  // 读取资料接口必须带上 uid
+  const result = await api(base, '/v1/profile', {}, alice.token);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.uid, alice.uid, 'GET /v1/profile 应返回 uid');
+
+  handle.close();
+});
+
+test('UID：老账号（无 uid 字段）载入快照后能自动补号', async () => {
+  // 模拟 UID 功能上线前落盘的旧快照
+  const store = new Store(null);
+  const user = store.createUser('legacy', 'salt', 'hash');
+  // 强制抹掉 uid，还原成"旧数据"的样子
+  (user as { uid?: string }).uid = '';
+
+  // 通过写入再载入来验证补号逻辑走了 load() 分支
+  const snapshot = JSON.parse(
+    JSON.stringify({
+      users: [{ id: user.id, username: 'legacy', passwordSalt: 's', passwordHash: 'h', createdAt: 1 }],
+      devices: [],
+      signedPreKeys: [],
+      oneTimePreKeys: [],
+      envelopes: [],
+      tokens: [],
+      profiles: [],
+      presence: [],
+    }),
+  );
+
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'e2ee-'));
+  const file = join(dir, 'state.json');
+  writeFileSync(file, JSON.stringify(snapshot));
+
+  const loaded = new Store(file);
+  const found = loaded.findUserByUsername('legacy');
+  assert.ok(found, '旧快照应能载入');
+  assert.match(found!.uid, /^\d{6}$/, '载入时应自动补上 6 位 UID');
+  assert.ok(loaded.findUserByUid(found!.uid), '补的 UID 应进入索引，可被搜索到');
+
+  handle_unused: {
+    // 仅占位，避免 lint 误判
+  }
+});
