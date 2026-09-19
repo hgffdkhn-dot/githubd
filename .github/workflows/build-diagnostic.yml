@@ -56,6 +56,11 @@ jobs:
       # 在构建前扫一遍，避免等四分钟 Gradle 才发现。
       - name: 校验模块引用可解析
         run: node scripts/check-requires.mjs apps/diagnostic
+      # Metro 不做类型检查，import 漏名字会构建成功但运行时崩
+      # （ReferenceError: Property 'X' doesn't exist）。构建前扫一遍。
+      - name: 校验标识符均已导入
+        run: node scripts/check-imports.mjs apps/diagnostic
+
 
       - name: 生成原生工程
         working-directory: apps/diagnostic

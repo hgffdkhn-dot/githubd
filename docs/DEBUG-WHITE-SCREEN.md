@@ -187,6 +187,46 @@ expo install react-native-quick-base64   # ← 容易漏
 - `ApiClient` 捕获连接失败，给出**带地址与排查提示**的错误，而不是一句 `Network request failed`
 - 登录页常驻显示当前服务器地址
 
+## 界面报 `Property 'X' doesn't exist`（ReferenceError）
+
+### 症状
+
+注册时报 `Property 'savePreKeyPrivate' doesn't exist`，
+会话恢复时报 `Property 'loadToken' doesn't exist`，且是 ReferenceError。
+
+### 根因：import 漏了名字
+
+`ChatEngine.ts` 调用了 `loadToken`、`savePreKeyPrivate`、`SecurePreKeyStore`、
+`SPK_PREFIX`、`OPK_PREFIX`、`saveToken` 共 6 个 `Keystore.ts` 的导出，
+但 import 语句里**漏了它们**。
+
+### 为什么构建能通过
+
+**Metro 用 Babel 打包，不做类型检查。** 漏 import 的名字在 Babel 眼里是一个
+"全局变量引用"——语法完全合法，构建照样成功、APK 照样产出。
+直到真机跑到那一行，Hermes 才发现这个全局变量不存在，抛 ReferenceError。
+
+### 为什么难查
+
+错误信息说"属性不存在"，指向的是函数名而不是 import 语句。
+看起来像"模块坏了""原生模块没链接"，很容易往错误方向查。
+
+### 防线
+
+`scripts/check-imports.mjs`：扫描所有文件，找出"使用了项目内某处的导出、
+但本文件没有 import"的标识符，构建前秒级失败。已接入两个构建工作流。
+
+脚本做了防误报处理：**前面紧跟 `.` 的用法视为属性访问并跳过**
+（`Buffer.concat`、`m.randomBytes` 这类是别的对象的方法，不是裸标识符）。
+
+已验证：能精确抓出本次事故的 `loadToken` 与 `savePreKeyPrivate`；
+修复后通过；对诊断工程、协议层、服务端均无误报。
+
+### 教训
+
+改动 import 语句时（尤其是用脚本批量改写多行 import），
+**必须确认改完后原有名字一个都没丢**。本次就是改写 import 块时的回归。
+
 ## 服务端 PUT 请求体被静默丢弃
 
 ### 症状

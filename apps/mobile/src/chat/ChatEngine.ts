@@ -25,7 +25,20 @@ import {
 
 import { ApiClient } from '../network/Api.js';
 import { MessageStream } from '../network/MessageStream.js';
-import { saveIdentity, loadIdentity, saveDeviceId, loadDeviceId, saveMyUid, loadMyUid } from '../crypto/Keystore.js';
+import {
+  saveIdentity,
+  loadIdentity,
+  saveToken,
+  loadToken,
+  saveDeviceId,
+  loadDeviceId,
+  saveMyUid,
+  loadMyUid,
+  savePreKeyPrivate,
+  SecurePreKeyStore,
+  SPK_PREFIX,
+  OPK_PREFIX,
+} from '../crypto/Keystore.js';
 import { SqliteSessionStore } from '../storage/SessionRepository.js';
 import { saveMessage, updateMessageStatus, listMessages, openDatabase } from '../storage/Database.js';
 import { bootstrapCrypto } from '../crypto/QuickCryptoAead.js';
