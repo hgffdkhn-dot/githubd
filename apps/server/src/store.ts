@@ -142,6 +142,7 @@ export class Store {
   private profiles = new Map<string, ProfileRecord>();
   private presence = new Map<string, PresenceRecord>();
   private flushTimer: NodeJS.Timeout | null = null;
+  private maintenanceTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly snapshotPath: string | null) {
     this.load();
@@ -189,6 +190,94 @@ export class Store {
       this.flushTimer = null;
       this.flush();
     }, 500);
+  }
+
+  /**
+   * 定期清理，防止内存只增不减导致 OOM
+   *
+   * 曾经的问题：过期令牌只在"被访问时"才删除，客户端一旦不再访问
+   * （换设备、卸载），那条记录就永远留在内存里，还会被写进快照。
+   * 长期运行后内存持续上涨，最终被系统 OOM 杀掉 ——
+   * 表现就是"服务每隔一段时间突然挂掉，且没有任何 JS 错误日志"。
+   *
+   * 现在改为主动定期清理。
+   */
+  startMaintenance(intervalMs = 30 * 60_000): void {
+    if (this.maintenanceTimer) return;
+    this.maintenanceTimer = setInterval(() => {
+      try {
+        this.cleanup();
+      } catch {
+        // 清理失败绝不能影响主服务
+      }
+    }, intervalMs);
+    // 不阻止进程退出
+    this.maintenanceTimer.unref?.();
+  }
+
+  /** 回收三类数据：过期令牌、陈旧在线状态、已投递很久的信封 */
+  cleanup(): { tokens: number; presence: number; envelopes: number } {
+    const now = Date.now();
+    let removedTokens = 0;
+
+    // 1) 过期令牌（TTL 30 天）
+    for (const [token, record] of this.tokens) {
+      if (record.expiresAt <= now) {
+        this.tokens.delete(token);
+        removedTokens += 1;
+      }
+    }
+
+    // 2) 超过 90 天没活跃的在线状态记录（易失数据，丢了下次心跳会重建）
+    let removedPresence = 0;
+    const presenceCutoff = now - 90 * 24 * 3600_000;
+    for (const [userId, record] of this.presence) {
+      if (record.lastSeen < presenceCutoff) {
+        this.presence.delete(userId);
+        removedPresence += 1;
+      }
+    }
+
+    // 3) 已投递且超过 7 天的信封（ack 后本就该删，这里是兜底）
+    let removedEnvelopes = 0;
+    const envelopeCutoff = now - 7 * 24 * 3600_000;
+    for (const [id, env] of this.envelopes) {
+      if (env.deliveredAt && env.createdAt < envelopeCutoff) {
+        this.envelopes.delete(id);
+        removedEnvelopes += 1;
+      }
+    }
+
+    if (removedTokens || removedPresence || removedEnvelopes) {
+      this.scheduleFlush();
+      console.log(
+        `[store] 清理完成：令牌 ${removedTokens} · 在线状态 ${removedPresence} · 信封 ${removedEnvelopes}`,
+      );
+    }
+    return { tokens: removedTokens, presence: removedPresence, envelopes: removedEnvelopes };
+  }
+
+  /**
+   * 把某人的在线时间往前推移（仅用于测试清理逻辑）
+   *
+   * 生产不会调用。放在这里是因为清理规则依赖真实时间流逝，
+   * 测试不可能真的等 90 天。
+   */
+  debugAgePresence(userId: string, ageMs: number): void {
+    const record = this.presence.get(userId);
+    if (record) record.lastSeen = Date.now() - ageMs;
+  }
+
+  /** 内存占用概况，供日志排查 OOM */
+  memoryReport(): string {
+    return [
+      `users=${this.users.size}`,
+      `devices=${this.devices.size}`,
+      `tokens=${this.tokens.size}`,
+      `envelopes=${this.envelopes.size}`,
+      `opk=${this.oneTimePreKeys.size}`,
+      `heap=${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
+    ].join(' ');
   }
 
   flush(): void {

@@ -1,5 +1,12 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  TextInput as RNTextInput,
+} from 'react-native';
 import { Text, TextInput, Button, Surface, IconButton, useTheme } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useChat } from '../src/chat/ChatProvider.js';
@@ -8,18 +15,7 @@ import { tryUnlock } from '../src/dev/devMode.js';
 import { DemoBanner } from '../src/ui/DemoBanner.js';
 
 export default function LoginScreen() {
-  const {
-    register,
-    login,
-    status,
-    error,
-    serverUrl,
-    changeServer,
-    restoreServer,
-    demo,
-    enterDemo,
-    leaveDemo,
-  } = useChat();
+  const { register, login, status, error, demo, enterDemo, leaveDemo } = useChat();
   const router = useRouter();
   const theme = useTheme();
 
@@ -31,8 +27,6 @@ export default function LoginScreen() {
 
   const [crash, setCrash] = useState<CrashRecord | null>(null);
   const [showCrash, setShowCrash] = useState(false);
-  const [showServer, setShowServer] = useState(false);
-  const [serverDraft, setServerDraft] = useState('');
 
   // 演示模式：需要口令，默认折叠，避免普通用户误入
   const [showDev, setShowDev] = useState(false);
@@ -40,6 +34,7 @@ export default function LoginScreen() {
   const [devError, setDevError] = useState<string | null>(null);
 
   const scrollRef = React.useRef<ScrollView>(null);
+  const passwordRef = React.useRef<React.ComponentRef<typeof RNTextInput> | null>(null);
   const devCardRef = React.useRef<View>(null);
 
   // 上次崩溃的原因直接显示在界面上，省去连电脑捞日志
@@ -130,51 +125,6 @@ export default function LoginScreen() {
           </Surface>
         ) : null}
 
-        {/* 服务器地址：连不上时第一眼就该看到它指向哪里 */}
-        <Surface style={styles.card} elevation={1}>
-          <View style={styles.serverHead}>
-            <Text variant="bodySmall" style={styles.serverLabel} numberOfLines={1}>
-              服务器：{serverUrl ?? '读取中…'}
-            </Text>
-            <Button compact mode="text" onPress={() => {
-              setServerDraft(serverUrl ?? '');
-              setShowServer((v) => !v);
-            }}>
-              {showServer ? '收起' : '修改'}
-            </Button>
-          </View>
-
-          {showServer ? (
-            <>
-              <TextInput
-                label="服务器地址"
-                mode="outlined"
-                value={serverDraft}
-                onChangeText={setServerDraft}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-                placeholder="http://192.168.1.100:8787"
-                dense
-                style={styles.input}
-              />
-              <Text variant="bodySmall" style={styles.hint}>
-                手机上的 localhost 指手机自己，必须填电脑的局域网 IP。
-              </Text>
-              <Button
-                mode="contained"
-                compact
-                onPress={() => changeServer(serverDraft).catch((e) => setError((e as Error).message))}
-              >
-                保存并应用
-              </Button>
-              <Button mode="text" compact onPress={() => restoreServer()}>
-                恢复默认值
-              </Button>
-            </>
-          ) : null}
-        </Surface>
-
         <Surface style={styles.card} elevation={1}>
           <TextInput
             label="用户名"
@@ -186,6 +136,9 @@ export default function LoginScreen() {
             disabled={busy || broken}
             left={<TextInput.Icon icon="account" />}
             style={styles.input}
+            returnKeyType="next"
+            onSubmitEditing={() => passwordRef.current?.focus()}
+            blurOnSubmit={false}
           />
 
           <TextInput
@@ -204,6 +157,9 @@ export default function LoginScreen() {
               />
             }
             style={styles.input}
+            ref={passwordRef}
+            returnKeyType={mode === 'login' ? 'go' : 'join'}
+            onSubmitEditing={submit}
           />
 
           {error && !broken ? (
@@ -336,8 +292,6 @@ const styles = StyleSheet.create({
   subtitle: { textAlign: 'center', marginTop: 8, opacity: 0.75 },
   card: { padding: 16, borderRadius: 16 },
   errorCard: { borderLeftWidth: 4, borderLeftColor: '#b3261e' },
-  serverHead: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  serverLabel: { flex: 1, opacity: 0.8, fontFamily: 'monospace' },
   hint: { opacity: 0.65, marginBottom: 8, lineHeight: 17 },
   input: { marginBottom: 12 },
   button: { marginTop: 4, marginBottom: 4 },

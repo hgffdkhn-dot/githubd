@@ -41,6 +41,10 @@ function buildHttpServer(requestHandler: (req: never, res: never) => void): Serv
 
 export function startServer(port = PORT, snapshotPath: string | null = SNAPSHOT_PATH) {
   const store = new Store(snapshotPath);
+  // 定期回收过期令牌等，防止内存只增不减被系统 OOM 杀掉
+  store.startMaintenance();
+  // 每 30 分钟打一次内存概况，OOM 时留得下线索
+  setInterval(() => console.log(`[mem] ${store.memoryReport()}`), 30 * 60_000).unref();
   const ctx: Ctx = { store, gateway: undefined as unknown as Gateway };
 
   const httpServer = createApiServer(ctx, (handler) => buildHttpServer(handler));

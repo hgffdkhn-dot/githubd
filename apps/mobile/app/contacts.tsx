@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, StyleSheet, FlatList } from 'react-native';
+import { View, StyleSheet, FlatList, RefreshControl } from 'react-native';
 import {
   Text,
   TextInput,
@@ -28,6 +28,7 @@ export default function ContactsScreen() {
   const [presence, setPresence] = useState<Record<string, DisplayPresence>>({});
   const [busy, setBusy] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   /** 在线状态每 30 秒刷新一次 */
   const refreshPresence = useCallback(
@@ -48,6 +49,23 @@ export default function ContactsScreen() {
     const timer = setInterval(() => void refreshPresence(results.map((r) => r.id)), 30_000);
     return () => clearInterval(timer);
   }, [results, refreshPresence]);
+
+  /** 下拉刷新：重拉在线状态；没有联系人时顺带重跑一次搜索 */
+  async function onRefresh() {
+    if (!engine) return;
+    setRefreshing(true);
+    try {
+      if (results.length > 0) {
+        await refreshPresence(results.map((r) => r.id));
+      } else if (query.trim()) {
+        setResults(await search(query.trim()));
+      }
+    } catch {
+      // 刷新失败不影响已显示的内容
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function runSearch() {
     if (!query.trim()) return;
@@ -92,6 +110,7 @@ export default function ContactsScreen() {
         data={results}
         keyExtractor={(item) => item.id}
         ItemSeparatorComponent={() => <Divider />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         renderItem={({ item }) => {
           const p = presence[item.id];
           return (

@@ -6,7 +6,7 @@ import { useChat } from '../src/chat/ChatProvider.js';
 import { DemoBanner } from '../src/ui/DemoBanner.js';
 
 export default function SettingsScreen() {
-  const { demo, leaveDemo, engine, serverUrl } = useChat();
+  const { demo, leaveDemo, engine } = useChat();
   const router = useRouter();
   const theme = useTheme();
 
@@ -44,7 +44,6 @@ export default function SettingsScreen() {
 
         <Text variant="bodySmall" style={styles.note}>
           当前状态：{who}
-          {serverUrl ? ` · 服务器 ${serverUrl}` : ''}
         </Text>
       </ScrollView>
     </View>

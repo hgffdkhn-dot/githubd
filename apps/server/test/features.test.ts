@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from '../src/index.js';
+import { Store } from '../src/store.js';
 
 type Json = Record<string, unknown>;
 
@@ -228,4 +229,45 @@ test('UID：搜索限流，防止遍历 UID 扒取用户名单', async () => {
   assert.equal(limited, true, '超出配额后应返回 429');
 
   handle.close();
+});
+
+test('内存维护：清理不会误删有效数据', async () => {
+  const store = new Store(null);
+  store.createUser('alice', 'salt', 'hash');
+  store.heartbeatPresence('alice', true);
+
+  const result = store.cleanup();
+  // 刚建的数据都没过期，一条都不该被清掉
+  assert.equal(result.tokens, 0, '未过期令牌不应被清理');
+  assert.equal(result.presence, 0, '刚上报的在线状态不应被清理');
+  assert.ok(store.memoryReport().includes('users=1'));
+});
+
+test('内存维护：过期令牌会被真正回收', async () => {
+  const store = new Store(null);
+  store.createUser('bob', 'salt', 'hash');
+
+  // 模拟"客户端卸载后不再访问"：令牌已过期，且从未被 resolve 过。
+  // 注意不能先调 resolveToken —— 它在遇到过期时会顺手删掉，
+  // 那样就测不出"主动回收"这条路径了。
+  store.issueToken(
+    (store.findUserByUsername('bob') as { id: string }).id,
+    'device-1',
+    -1000, // 负 TTL = 立即过期
+  );
+
+  // 关键：即使没人访问它，清理也要把它回收掉
+  const result = store.cleanup();
+  assert.equal(result.tokens, 1, '过期令牌必须被主动回收，而不是等被访问');
+});
+
+test('内存维护：陈旧在线状态会被回收', async () => {
+  const store = new Store(null);
+  store.heartbeatPresence('alice', true);
+
+  // 把最后活跃时间改到 100 天前
+  store.debugAgePresence('alice', 100 * 24 * 3600_000);
+
+  const result = store.cleanup();
+  assert.equal(result.presence, 1, '超过 90 天未活跃的在线记录应被回收');
 });
