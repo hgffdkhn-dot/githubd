@@ -29,6 +29,12 @@ import { SecurePreKeyStore, loadIdentity, loadToken, saveIdentity, saveDeviceId,
 import { SqliteSessionStore } from '../storage/SessionRepository.js';
 import { saveMessage, updateMessageStatus, listMessages, openDatabase } from '../storage/Database.js';
 import { bootstrapCrypto } from '../crypto/QuickCryptoAead.js';
+import { ProfileManager, type ResolvedProfile } from '../profile/ProfileManager.js';
+import { PresenceManager, type DisplayPresence } from '../presence/PresenceManager.js';
+import type { MyDevice } from '../network/Api.js';
+
+type OwnProfileView = ResolvedProfile;
+export type { OwnProfileView, DisplayPresence, MyDevice };
 
 const OPK_BATCH_SIZE = 50;
 const OPK_REPLENISH_THRESHOLD = 20;
@@ -51,6 +57,8 @@ export class ChatEngine {
   private deviceId = '';
   private userId = '';
   private token = '';
+  private presence: PresenceManager | null = null;
+  private profiles: ProfileManager | null = null;
   private nextOpkId = 1;
   private spkId = 1;
   private spkGeneratedAt = 0;
@@ -75,6 +83,108 @@ export class ChatEngine {
   get self(): { userId: string; deviceId: string; identityKey: Uint8Array } | null {
     if (!this.identity) return null;
     return { userId: this.userId, deviceId: this.deviceId, identityKey: this.identity.identityKey };
+  }
+
+  /** 当前会话令牌，供资料/在线状态等模块复用 */
+  get authToken(): string {
+    return this.token;
+  }
+
+  /** 身份私钥：仅用于派生资料密钥，绝不外传 */
+  get identityPrivateKey(): Uint8Array | null {
+    return this.identity?.identityPrivateKey ?? null;
+  }
+
+  /** 在线状态上报开关；关闭后服务端对他人返回"不显示" */
+  async startPresence(shareOnline: boolean): Promise<void> {
+    if (!this.token) return;
+    if (!this.presence) {
+      this.presence = new PresenceManager(this.api, async () => this.token);
+    }
+    await this.presence.start(shareOnline);
+  }
+
+  setPresenceSharing(value: boolean): void {
+    this.presence?.setShareOnline(value);
+  }
+
+  stopPresence(): void {
+    this.presence?.stop();
+  }
+
+  async fetchPresence(userIds: string[]): Promise<Record<string, DisplayPresence>> {
+    if (!this.token) return {};
+    if (!this.presence) this.presence = new PresenceManager(this.api, async () => this.token);
+    return this.presence.fetch(userIds);
+  }
+
+  // ------------------------------------------------------------------
+  // 设备管理
+  // ------------------------------------------------------------------
+
+  async listMyDevices(): Promise<MyDevice[]> {
+    if (!this.token) throw new Error('未登录');
+    return this.api.listMyDevices(this.token);
+  }
+
+  async revokeDevice(deviceId: string): Promise<void> {
+    if (!this.token) throw new Error('未登录');
+    await this.api.revokeDevice(this.token, deviceId);
+  }
+
+  // ------------------------------------------------------------------
+  // 个人主页
+  // ------------------------------------------------------------------
+
+  /** 自己的资料；friends 模式下服务端只存密文，本地解开 */
+  async loadMyProfile(): Promise<OwnProfileView> {
+    if (!this.token || !this.identity) throw new Error('未登录');
+    if (!this.profiles) {
+      this.profiles = new ProfileManager(this.api, {
+        identityPrivateKey: this.identity.identityPrivateKey,
+      });
+      this.profiles.setTokenProvider(async () => this.token);
+    }
+    return this.profiles.loadOwn(this.userId);
+  }
+
+  async saveMyProfile(
+    input: { displayName: string; bio: string },
+    visibility: 'friends' | 'public',
+  ): Promise<void> {
+    if (!this.token || !this.identity) throw new Error('未登录');
+    if (!this.profiles) {
+      this.profiles = new ProfileManager(this.api, {
+        identityPrivateKey: this.identity.identityPrivateKey,
+      });
+      this.profiles.setTokenProvider(async () => this.token);
+    }
+    await this.profiles.saveOwn(this.userId, input, visibility);
+  }
+
+  /**
+   * 读取对方资料。
+   * friends 模式需要对方身份公钥才能解密 —— 握过手就有，没有则显示锁定态。
+   */
+  async loadPeerProfile(userId: string): Promise<OwnProfileView> {
+    if (!this.token || !this.identity) throw new Error('未登录');
+    if (!this.profiles) {
+      this.profiles = new ProfileManager(this.api, {
+        identityPrivateKey: this.identity.identityPrivateKey,
+      });
+      this.profiles.setTokenProvider(async () => this.token);
+    }
+
+    // 对方身份公钥属于公开材料（服务端本就持有），用它配合自己的私钥派生资料密钥。
+    // 服务端只有两个公钥，做不出 ECDH，因此解不开密文。
+    let peerIdentity: Uint8Array | undefined;
+    try {
+      const devices = await this.api.listDevices(this.token, userId);
+      peerIdentity = devices[0] ? fromBase64(devices[0].identityKey) : undefined;
+    } catch {
+      peerIdentity = undefined;
+    }
+    return this.profiles.loadPeer(userId, peerIdentity);
   }
 
   /** 首次启动：生成身份与预密钥；已注册设备则直接复用 */

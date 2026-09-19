@@ -8,6 +8,10 @@
  */
 
 import type { DecryptedMessage } from '../chat/ChatEngine.js';
+import type { MyDevice } from '../network/Api.js';
+import type { DisplayPresence } from '../presence/PresenceManager.js';
+import type { ResolvedProfile } from '../profile/ProfileManager.js';
+import { avatarColorFor, initialOf } from '../profile/profileCrypto.js';
 
 /** 预置的演示联系人 */
 export const DEMO_CONTACTS = [
@@ -122,5 +126,82 @@ export class MockEngine {
 
   whoami(): string {
     return this.currentUser;
+  }
+
+  // ------------------------------------------------------------------
+  // 演示用的假数据：设备管理 / 个人主页 / 在线状态
+  // ------------------------------------------------------------------
+
+  async startPresence(_shareOnline: boolean): Promise<void> {}
+
+  setPresenceSharing(_value: boolean): void {}
+
+  stopPresence(): void {}
+
+  async fetchPresence(userIds: string[]): Promise<Record<string, DisplayPresence>> {
+    const out: Record<string, DisplayPresence> = {};
+    // 让部分联系人显示为在线，便于看到 UI 效果
+    userIds.forEach((id, index) => {
+      const online = index % 2 === 0;
+      out[id] = {
+        online,
+        hidden: false,
+        label: online ? '在线' : `${(index % 5) + 1} 分钟前`,
+      };
+    });
+    return out;
+  }
+
+  async listMyDevices(): Promise<MyDevice[]> {
+    const now = Date.now();
+    return [
+      {
+        id: 'demo-device-current',
+        label: '本机（演示）',
+        platform: 'Android',
+        createdAt: now - 3 * 24 * 3600_000,
+        lastSeen: now,
+        current: true,
+      },
+      {
+        id: 'demo-device-old',
+        label: '旧手机',
+        platform: 'Android',
+        createdAt: now - 40 * 24 * 3600_000,
+        lastSeen: now - 9 * 24 * 3600_000,
+        current: false,
+      },
+    ];
+  }
+
+  async revokeDevice(_deviceId: string): Promise<void> {
+    // 演示模式没有真实设备，静默成功即可
+  }
+
+  async loadMyProfile(): Promise<ResolvedProfile> {
+    return {
+      displayName: this.currentUser || '演示用户',
+      bio: '这是演示模式的个人主页，不会上传到任何服务器。',
+      avatarBg: avatarColorFor(this.currentUser || 'demo'),
+      avatarInitial: initialOf(this.currentUser || '演示用户', '演'),
+      visibility: 'friends',
+      locked: false,
+    };
+  }
+
+  async saveMyProfile(input: { displayName: string; bio: string }): Promise<void> {
+    this.currentUser = input.displayName || this.currentUser;
+  }
+
+  async loadPeerProfile(userId: string): Promise<ResolvedProfile> {
+    const name = DEMO_CONTACTS.find((c) => c.id === userId)?.username ?? '好友';
+    return {
+      displayName: name,
+      bio: '演示资料：真实环境下这段内容由端到端加密分发。',
+      avatarBg: avatarColorFor(userId),
+      avatarInitial: initialOf(name, '?'),
+      visibility: 'friends',
+      locked: false,
+    };
   }
 }

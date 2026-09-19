@@ -13,6 +13,10 @@ import { useLocalSearchParams } from 'expo-router';
 import { useChat } from '../../src/chat/ChatProvider.js';
 import type { DecryptedMessage } from '../../src/chat/ChatEngine.js';
 import { DemoBanner } from '../../src/ui/DemoBanner.js';
+import { Avatar } from '../../src/ui/Avatar.js';
+import type { DisplayPresence } from '../../src/presence/PresenceManager.js';
+import type { ResolvedProfile } from '../../src/profile/ProfileManager.js';
+import { avatarColorFor, initialOf } from '../../src/profile/profileCrypto.js';
 
 export default function ChatScreen() {
   const { userId, username } = useLocalSearchParams<{ userId: string; username?: string }>();
@@ -24,6 +28,8 @@ export default function ChatScreen() {
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<ResolvedProfile | null>(null);
+  const [presence, setPresence] = useState<DisplayPresence | null>(null);
 
   useEffect(() => {
     if (!engine) return;
@@ -35,6 +41,19 @@ export default function ChatScreen() {
       })
       .catch((e) => setFailure((e as Error).message))
       .finally(() => setLoading(false));
+  }, [engine, userId]);
+
+  // 对方资料与在线状态：失败都不影响聊天，只降级展示
+  useEffect(() => {
+    if (!engine || !userId) return;
+    engine
+      .loadPeerProfile(userId)
+      .then(setProfile)
+      .catch(() => setProfile(null));
+    engine
+      .fetchPresence([userId])
+      .then((map) => setPresence(map[userId] ?? null))
+      .catch(() => setPresence(null));
   }, [engine, userId]);
 
   const visible = useMemo(
@@ -60,6 +79,25 @@ export default function ChatScreen() {
       keyboardVerticalOffset={80}
     >
       {demo ? <DemoBanner onExit={() => void leaveDemo()} /> : null}
+
+      <Surface style={styles.peerBar} elevation={1}>
+        <Avatar
+          label={profile?.avatarInitial || initialOf(username ?? '?', '?')}
+          color={profile?.avatarBg || avatarColorFor(userId)}
+          size={44}
+          online={!!presence?.online && !presence.hidden}
+        />
+        <View style={styles.peerText}>
+          <Text variant="titleSmall">
+            {profile?.displayName || username || '对话'}
+            {profile?.locked ? '（资料加密，暂不可读）' : ''}
+          </Text>
+          <Text variant="bodySmall" style={{ opacity: 0.7 }}>
+            {presence && !presence.hidden ? presence.label : '在线状态不显示'}
+            {profile?.bio ? ` · ${profile.bio}` : ''}
+          </Text>
+        </View>
+      </Surface>
 
       {safetyNumber ? (
         <Surface style={styles.safetyBar} elevation={1}>
@@ -151,6 +189,8 @@ function MessageBubble({ item }: { item: DecryptedMessage }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  peerBar: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10 },
+  peerText: { flex: 1 },
   safetyBar: { padding: 12, gap: 4, alignItems: 'flex-start' },
   safetyHint: { opacity: 0.7 },
   failure: { paddingHorizontal: 16, paddingVertical: 4 },

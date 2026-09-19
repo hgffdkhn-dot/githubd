@@ -10,8 +10,13 @@ import type { Store } from './store.js';
 import type { Gateway } from './gateway.js';
 import { hashPassword, verifyPassword } from './auth.js';
 
-const MAX_BODY_BYTES = 256 * 1024;
+// 头像以 base64 随资料提交，256KB 不够用
+const MAX_BODY_BYTES = 1024 * 1024;
+/** 头像 base64 上限（约 384KB 原始字节），防止把服务端当图床 */
+const MAX_AVATAR_CHARS = 512 * 1024;
 const MAX_PENDING = 500;
+/** 60 秒内有心跳视为在线 */
+const ONLINE_WINDOW_MS = 60_000;
 
 /** 信封中允许出现的字段；出现集合外的字段一律拒绝 */
 const ENVELOPE_FIELDS = [
@@ -42,6 +47,19 @@ function assertNoForbiddenFields(value: unknown, path = ''): void {
       assertNoForbiddenFields(v, `${path}${k}.`);
     }
   }
+}
+
+/** 设备展示信息：用户自报，仅用于"最近登录"列表，不参与任何安全判断 */
+function readDeviceLabel(body: Record<string, unknown>): string {
+  const raw = body.deviceLabel;
+  if (typeof raw !== 'string') return '未命名设备';
+  return raw.slice(0, 64);
+}
+
+function readDevicePlatform(body: Record<string, unknown>): string {
+  const raw = body.devicePlatform;
+  if (typeof raw !== 'string') return 'unknown';
+  return raw.slice(0, 32);
 }
 
 export class HttpError extends Error {
@@ -118,8 +136,16 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       const { salt, hash } = await hashPassword(password);
       const user = ctx.store.createUser(username, salt, hash);
 
-      ctx.store.upsertDevice({ id: deviceId, userId: user.id, identityKey, signingKey });
+      ctx.store.upsertDevice({
+        id: deviceId,
+        userId: user.id,
+        identityKey,
+        signingKey,
+        label: readDeviceLabel(body),
+        platform: readDevicePlatform(body),
+      });
       publishKeys(ctx, user.id, deviceId, body);
+      ctx.store.heartbeatPresence(user.id, true);
 
       const token = ctx.store.issueToken(user.id, deviceId);
       return { userId: user.id, deviceId, token };
@@ -143,7 +169,10 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
         userId: user.id,
         identityKey: requireString(body, 'identityKey', 128),
         signingKey: requireString(body, 'signingKey', 128),
+        label: readDeviceLabel(body),
+        platform: readDevicePlatform(body),
       });
+      ctx.store.heartbeatPresence(user.id, true);
       const token = ctx.store.issueToken(user.id, deviceId);
       return { userId: user.id, deviceId, token };
     },
@@ -200,6 +229,170 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       const q = url.searchParams.get('q') ?? '';
       if (q.length < 1) return { users: [] };
       return { users: ctx.store.searchUsers(q) };
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/v1\/devices\/mine$/,
+    handler: async (ctx, req, _res, _body) => {
+      const { userId, deviceId } = authenticate(req, ctx);
+      const devices = ctx.store.listDevices(userId).map((d) => ({
+        id: d.id,
+        label: d.label,
+        platform: d.platform,
+        createdAt: d.createdAt,
+        lastSeen: d.lastSeen,
+        revokedAt: d.revokedAt,
+        current: d.id === deviceId,
+      }));
+      // 最近登录在前
+      devices.sort((a, b) => b.lastSeen - a.lastSeen);
+      return { devices };
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/v1\/devices\/revoke$/,
+    handler: async (ctx, req, _res, body) => {
+      const { userId, deviceId: current } = authenticate(req, ctx);
+      const target = requireString(body, 'deviceId', 128);
+      // 踢出自己会让当前会话立刻失效，属于误操作，直接拒绝
+      if (target === current) throw new HttpError(400, '不能踢出当前设备');
+      if (!ctx.store.revokeDevice(userId, target)) throw new HttpError(404, '设备不存在');
+      return { ok: true };
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/v1\/profile$/,
+    handler: async (ctx, req, _res, _body) => {
+      const { userId } = authenticate(req, ctx);
+      const profile = ctx.store.getProfile(userId);
+      return { profile: profile ?? { userId, visibility: 'friends', updatedAt: 0 } };
+    },
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/v1\/profile$/,
+    handler: async (ctx, req, _res, body) => {
+      const { userId } = authenticate(req, ctx);
+      const visibility = body.visibility === 'public' ? 'public' : 'friends';
+
+      const record: import('./store.js').ProfileRecord = {
+        userId,
+        visibility,
+        updatedAt: Date.now(),
+      };
+
+      const enc = body.encrypted as Record<string, unknown> | undefined;
+      if (enc && typeof enc.nonce === 'string' && typeof enc.ciphertext === 'string') {
+        record.encrypted = {
+          nonce: enc.nonce.slice(0, 256),
+          ciphertext: enc.ciphertext.slice(0, 128 * 1024),
+        };
+      }
+
+      // public 模式才允许存明文；friends 模式即便传了也忽略，避免误泄
+      if (visibility === 'public') {
+        const pf = body.publicFields as Record<string, unknown> | undefined;
+        record.publicFields = {
+          displayName: typeof pf?.displayName === 'string' ? pf.displayName.slice(0, 64) : '',
+          bio: typeof pf?.bio === 'string' ? pf.bio.slice(0, 300) : '',
+        };
+      }
+
+      const av = body.avatar as Record<string, unknown> | undefined;
+      if (av && typeof av.data === 'string') {
+        const data = av.data.slice(0, MAX_AVATAR_CHARS);
+        const mime = typeof av.mime === 'string' ? av.mime.slice(0, 64) : 'image/jpeg';
+        const nonce = typeof av.nonce === 'string' ? av.nonce.slice(0, 256) : undefined;
+        // friends 模式头像必须是密文（有 nonce）；public 模式存明文
+        const encrypted = visibility === 'friends' ? !!nonce : false;
+        record.avatar = { mime, data, nonce, encrypted };
+      }
+
+      // public 模式要求至少有明文昵称，否则查询方拿不到任何信息
+      if (visibility === 'public' && !record.publicFields?.displayName) {
+        throw new HttpError(400, '公开模式需要填写昵称');
+      }
+
+      ctx.store.saveProfile(record);
+      return { ok: true, updatedAt: record.updatedAt };
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/v1\/profile\/user\/([^/]+)$/,
+    handler: async (ctx, req, _res, _body) => {
+      const match = /^\/v1\/profile\/user\/([^/]+)$/.exec(req.url ?? '');
+      const target = decodeURIComponent(match?.[1] ?? '');
+      if (!target) throw new HttpError(400, 'userId 缺失');
+
+      const profile = ctx.store.getProfile(target);
+      if (!profile) return { profile: null };
+
+      if (profile.visibility === 'public') {
+        return {
+          profile: {
+            visibility: 'public',
+            displayName: profile.publicFields?.displayName ?? '',
+            bio: profile.publicFields?.bio ?? '',
+            avatar: profile.avatar?.encrypted ? undefined : profile.avatar,
+            updatedAt: profile.updatedAt,
+          },
+        };
+      }
+
+      // friends 模式：只返回密文，解密权在持有资料密钥的好友手里
+      return {
+        profile: {
+          visibility: 'friends',
+          encrypted: profile.encrypted,
+          avatar: profile.avatar?.encrypted ? profile.avatar : undefined,
+          updatedAt: profile.updatedAt,
+        },
+      };
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/v1\/presence\/heartbeat$/,
+    handler: async (ctx, req, _res, body) => {
+      const { userId, deviceId } = authenticate(req, ctx);
+      const visible = body.visible !== false;
+      ctx.store.touchDevice(userId, deviceId);
+      ctx.store.heartbeatPresence(userId, visible);
+      return { ok: true };
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/v1\/presence$/,
+    handler: async (ctx, req, _res, _body) => {
+      authenticate(req, ctx);
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const ids = (url.searchParams.get('ids') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 200);
+
+      const now = Date.now();
+      const presence: Record<string, { online: boolean; lastSeen: number; hidden: boolean }> = {};
+      for (const id of ids) {
+        const record = ctx.store.getPresence(id);
+        if (!record || !record.visible) {
+          // 未上报过或主动隐藏：一律返回隐藏，不泄露任何时间信息
+          presence[id] = { online: false, lastSeen: 0, hidden: true };
+          continue;
+        }
+        presence[id] = {
+          online: now - record.lastSeen <= ONLINE_WINDOW_MS,
+          lastSeen: record.lastSeen,
+          hidden: false,
+        };
+      }
+      return { presence };
     },
   },
   {
@@ -342,7 +535,10 @@ export function createApiServer(
         return send(res, 404, { error: 'not found' });
       }
 
-      const body = method === 'POST' ? await readJson(req) : {};
+      // PUT/PATCH 同样需要读请求体：早期只在 POST 时读，
+      // 导致 PUT /v1/profile 的密文被静默丢弃且无任何报错
+      const body =
+        method === 'POST' || method === 'PUT' || method === 'PATCH' ? await readJson(req) : {};
       const result = await route.handler(ctx, req, res, body);
       return send(res, 200, result ?? {});
     } catch (error) {

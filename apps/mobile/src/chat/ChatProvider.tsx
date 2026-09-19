@@ -4,6 +4,13 @@ import { recordError } from '../ui/crashLog.js';
 import { getServerUrl, setServerUrl, resetServerUrl } from '../network/serverConfig.js';
 import { MockEngine } from '../dev/MockEngine.js';
 import { isDevUnlocked } from '../dev/devMode.js';
+import type { MyDevice } from '../network/Api.js';
+import type { DisplayPresence } from '../presence/PresenceManager.js';
+import type { ResolvedProfile } from '../profile/ProfileManager.js';
+import { loadPrivacy } from '../settings/privacy.js';
+
+type OwnProfileView = ResolvedProfile;
+export type { MyDevice, DisplayPresence, OwnProfileView };
 
 /** UI 真正用到的方法集合，真实引擎与演示引擎都满足 */
 export interface EngineLike {
@@ -17,6 +24,17 @@ export interface EngineLike {
   safetyNumberWith(peerIdentityKey: Uint8Array): string;
   searchUsers(query: string): Promise<{ id: string; username: string }[]>;
   stop(): void;
+  // 设备管理
+  listMyDevices(): Promise<MyDevice[]>;
+  revokeDevice(deviceId: string): Promise<void>;
+  // 个人主页
+  loadMyProfile(): Promise<OwnProfileView>;
+  saveMyProfile(input: { displayName: string; bio: string }, visibility: 'friends' | 'public'): Promise<void>;
+  loadPeerProfile(userId: string): Promise<OwnProfileView>;
+  // 在线状态
+  startPresence(shareOnline: boolean): Promise<void>;
+  setPresenceSharing(value: boolean): void;
+  fetchPresence(userIds: string[]): Promise<Record<string, DisplayPresence>>;
 }
 
 interface ChatContextValue {
@@ -38,6 +56,16 @@ interface ChatContextValue {
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
+
+/** 登录后开启在线心跳；是否对他人可见取决于隐私设置 */
+async function startPresenceFor(engine: EngineLike): Promise<void> {
+  try {
+    const { shareOnline } = await loadPrivacy();
+    await engine.startPresence(shareOnline);
+  } catch {
+    // 在线状态属于增强功能，失败不应影响登录
+  }
+}
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
@@ -108,6 +136,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           setError(null);
           await engine.register(username, password);
           await engine.start();
+          await startPresenceFor(engine);
           setStatus('ready');
         } catch (e) {
           setError((e as Error).message);
@@ -120,6 +149,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           setError(null);
           await engine.login(username, password);
           await engine.start();
+          await startPresenceFor(engine);
           setStatus('ready');
         } catch (e) {
           setError((e as Error).message);

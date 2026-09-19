@@ -178,6 +178,110 @@ export class ApiClient {
       body: JSON.stringify({ envelopeIds }),
     }, token);
   }
+
+  // ------------------------------------------------------------------
+  // 设备管理（设置 → 隐私 → 设备管理）
+  // ------------------------------------------------------------------
+
+  async listMyDevices(token: string): Promise<MyDevice[]> {
+    const result = await this.request<{ devices: MyDevice[] }>('/v1/devices/mine', {}, token);
+    return result.devices;
+  }
+
+  async revokeDevice(token: string, deviceId: string): Promise<void> {
+    await this.request(
+      '/v1/devices/revoke',
+      { method: 'POST', body: JSON.stringify({ deviceId }) },
+      token,
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // 个人主页
+  // ------------------------------------------------------------------
+
+  async getMyProfile(token: string): Promise<OwnProfileDto> {
+    const result = await this.request<{ profile: OwnProfileDto }>('/v1/profile', {}, token);
+    return result.profile;
+  }
+
+  async putMyProfile(token: string, body: PutProfileBody): Promise<{ updatedAt: number }> {
+    return this.request<{ ok: boolean; updatedAt: number }>(
+      '/v1/profile',
+      { method: 'PUT', body: JSON.stringify(body) },
+      token,
+    );
+  }
+
+  async getUserProfile(token: string, userId: string): Promise<PeerProfileDto | null> {
+    const result = await this.request<{ profile: PeerProfileDto | null }>(
+      `/v1/profile/user/${encodeURIComponent(userId)}`,
+      {},
+      token,
+    );
+    return result.profile;
+  }
+
+  // ------------------------------------------------------------------
+  // 在线状态
+  // ------------------------------------------------------------------
+
+  async heartbeat(token: string, visible: boolean): Promise<void> {
+    await this.request(
+      '/v1/presence/heartbeat',
+      { method: 'POST', body: JSON.stringify({ visible }) },
+      token,
+    );
+  }
+
+  async fetchPresence(token: string, userIds: string[]): Promise<Record<string, PresenceEntry>> {
+    if (userIds.length === 0) return {};
+    const ids = userIds.slice(0, 200).map(encodeURIComponent).join(',');
+    const result = await this.request<{ presence: Record<string, PresenceEntry> }>(
+      `/v1/presence?ids=${ids}`,
+      {},
+      token,
+    );
+    return result.presence;
+  }
+}
+
+export interface MyDevice {
+  id: string;
+  label: string;
+  platform: string;
+  createdAt: number;
+  lastSeen: number;
+  revokedAt?: number;
+  current: boolean;
+}
+
+export interface PresenceEntry {
+  online: boolean;
+  lastSeen: number;
+  hidden: boolean;
+}
+
+export interface OwnProfileDto {
+  userId: string;
+  visibility: 'friends' | 'public';
+  encrypted?: { nonce: string; ciphertext: string };
+  publicFields?: { displayName: string; bio: string };
+  updatedAt: number;
+}
+
+export interface PeerProfileDto {
+  visibility: 'friends' | 'public';
+  displayName?: string;
+  bio?: string;
+  encrypted?: { nonce: string; ciphertext: string };
+  updatedAt: number;
+}
+
+export interface PutProfileBody {
+  visibility: 'friends' | 'public';
+  encrypted?: { nonce: string; ciphertext: string };
+  publicFields?: { displayName: string; bio: string };
 }
 
 export function generatePreKeyBundle(identity: LocalIdentity, spkId: number, startOpkId: number, count = 50) {

@@ -187,6 +187,39 @@ expo install react-native-quick-base64   # ← 容易漏
 - `ApiClient` 捕获连接失败，给出**带地址与排查提示**的错误，而不是一句 `Network request failed`
 - 登录页常驻显示当前服务器地址
 
+## 服务端 PUT 请求体被静默丢弃
+
+### 症状
+
+`PUT /v1/profile` 保存资料后，服务端存的却是空资料；public 模式缺昵称也没有按预期报 400。
+
+### 根因
+
+服务端只在 POST 时读取请求体：
+
+```js
+const body = method === 'POST' ? await readJson(req) : {};   // ← PUT 拿到 {}
+```
+
+于是 `body.visibility` 为 `undefined`，被兜底成 `friends`，昵称校验那一步根本没执行。
+
+### 为什么危险
+
+friends 模式下，`encrypted` 密文会被**静默丢弃**——调用方拿到 200，以为资料已存，实际服务端存了空记录。没有任何报错，极难发现。这是那种"看起来一切正常"的 bug。
+
+### 修法
+
+```js
+const body =
+  method === 'POST' || method === 'PUT' || method === 'PATCH' ? await readJson(req) : {};
+```
+
+### 教训
+
+"只处理了 POST"这类不对称写法，在新增 PUT 接口时会以"静默失败"的形式暴露。**新增任何非 GET/POST 接口时，先确认请求体会被解析**，并写一个断言真实字段生效的测试（而不是只测 200）。
+
+本次正是靠测试里的 `assert.equal(bad.status, 400)` 抓出来的——如果只测 200，就会漏掉。
+
 ## CI 报 Unable to resolve module …/legacy
 
 ### 关键教训：Metro 在打包期静态解析 require()，try/catch 完全没用

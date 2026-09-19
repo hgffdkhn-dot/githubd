@@ -23,6 +23,12 @@ export interface DeviceRecord {
   identityKey: string;
   signingKey: string;
   lastSeen: number;
+  /** 设备管理与"最近登录"展示所需；均为用户自报的展示信息，不含密钥材料 */
+  createdAt: number;
+  label: string;
+  platform: string;
+  /** 被踢出后置为时间戳，该设备的 token 立即失效 */
+  revokedAt?: number;
 }
 
 export interface SignedPreKeyRecord {
@@ -60,6 +66,47 @@ export interface TokenRecord {
   expiresAt: number;
 }
 
+/**
+ * 个人资料
+ *
+ * 隐私模型：
+ *  - visibility='friends'（默认）：只存密文，服务端不可读。资料密钥由资料所有者
+ *    通过端到端加密会话分发给好友，服务端全程只经手密文。
+ *  - visibility='public'：用户主动选择公开，服务端保存明文副本，任何人可读取。
+ *
+ * ⚠️ 这是本项目唯一允许出现用户明文内容的存储位置，且必须由用户显式选择。
+ */
+export interface ProfileRecord {
+  userId: string;
+  visibility: 'friends' | 'public';
+  /** friends 模式：资料密文（nonce + ciphertext），服务端无法解密 */
+  encrypted?: { nonce: string; ciphertext: string };
+  /** public 模式：明文副本，服务端可读 —— 用户主动切换可见性时才产生 */
+  publicFields?: { displayName: string; bio: string };
+  /** 头像：friends 模式存密文，public 模式存明文字节 */
+  avatar?: {
+    mime: string;
+    /** friends 模式为密文 base64；public 模式为明文 base64 */
+    data: string;
+    nonce?: string;
+    encrypted: boolean;
+  };
+  updatedAt: number;
+}
+
+/**
+ * 在线状态
+ *
+ * 只存"最后活跃时间"，不存 IP、不存精确轨迹。
+ * visible=false 的用户，即使在线也不对外展示（他人查询时返回隐藏）。
+ */
+export interface PresenceRecord {
+  userId: string;
+  lastSeen: number;
+  /** 用户是否在隐私设置里允许展示自己的在线动态 */
+  visible: boolean;
+}
+
 interface Snapshot {
   users: UserRecord[];
   devices: DeviceRecord[];
@@ -67,6 +114,8 @@ interface Snapshot {
   oneTimePreKeys: OneTimePreKeyRecord[];
   envelopes: EnvelopeRecord[];
   tokens: TokenRecord[];
+  profiles: ProfileRecord[];
+  presence: PresenceRecord[];
 }
 
 const LOW_PREKEY_THRESHOLD = 20;
@@ -79,6 +128,8 @@ export class Store {
   private oneTimePreKeys = new Map<string, OneTimePreKeyRecord>();
   private envelopes = new Map<string, EnvelopeRecord>();
   private tokens = new Map<string, TokenRecord>();
+  private profiles = new Map<string, ProfileRecord>();
+  private presence = new Map<string, PresenceRecord>();
   private flushTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly snapshotPath: string | null) {
@@ -108,6 +159,8 @@ export class Store {
       for (const t of raw.tokens ?? []) {
         if (t.expiresAt > Date.now()) this.tokens.set(t.token, t);
       }
+      for (const p of raw.profiles ?? []) this.profiles.set(p.userId, p);
+      for (const p of raw.presence ?? []) this.presence.set(p.userId, p);
     } catch {
       // 快照损坏时以空库启动，绝不能因为持久层问题让服务降级为"明文转发"
     }
@@ -130,6 +183,8 @@ export class Store {
       oneTimePreKeys: [...this.oneTimePreKeys.values()],
       envelopes: [...this.envelopes.values()],
       tokens: [...this.tokens.values()],
+      profiles: [...this.profiles.values()],
+      presence: [...this.presence.values()],
     };
     mkdirSync(dirname(resolve(this.snapshotPath)), { recursive: true });
     writeFileSync(this.snapshotPath, JSON.stringify(snapshot));
@@ -189,8 +244,16 @@ export class Store {
 
   /* ---------------- 设备与公开密钥 ---------------- */
 
-  upsertDevice(device: Omit<DeviceRecord, 'lastSeen'>): void {
-    this.devices.set(`${device.userId}::${device.id}`, { ...device, lastSeen: Date.now() });
+  /** 重复登录不重置 createdAt，否则"最近登录"列表的时间会漂移 */
+  upsertDevice(device: Omit<DeviceRecord, 'lastSeen' | 'createdAt'> & { createdAt?: number }): void {
+    const key = `${device.userId}::${device.id}`;
+    const existing = this.devices.get(key);
+    this.devices.set(key, {
+      ...device,
+      createdAt: existing?.createdAt ?? device.createdAt ?? Date.now(),
+      lastSeen: Date.now(),
+      revokedAt: undefined, // 重新登录视为主动恢复，清除踢出标记
+    });
     this.scheduleFlush();
   }
 
@@ -200,6 +263,59 @@ export class Store {
 
   listDevices(userId: string): DeviceRecord[] {
     return [...this.devices.values()].filter((d) => d.userId === userId);
+  }
+
+  /** 踢出设备：立即让该设备的所有 token 失效 */
+  revokeDevice(userId: string, deviceId: string): boolean {
+    const device = this.devices.get(`${userId}::${deviceId}`);
+    if (!device) return false;
+    device.revokedAt = Date.now();
+    for (const [token, record] of this.tokens) {
+      if (record.userId === userId && record.deviceId === deviceId) this.tokens.delete(token);
+    }
+    this.scheduleFlush();
+    return true;
+  }
+
+  isDeviceRevoked(userId: string, deviceId: string): boolean {
+    return this.devices.get(`${userId}::${deviceId}`)?.revokedAt !== undefined;
+  }
+
+  touchDevice(userId: string, deviceId: string): void {
+    const device = this.devices.get(`${userId}::${deviceId}`);
+    if (!device) return;
+    device.lastSeen = Date.now();
+  }
+
+  /* ---------------- 个人资料 ---------------- */
+
+  getProfile(userId: string): ProfileRecord | undefined {
+    return this.profiles.get(userId);
+  }
+
+  saveProfile(record: ProfileRecord): void {
+    this.profiles.set(record.userId, record);
+    this.scheduleFlush();
+  }
+
+  /* ---------------- 在线状态 ---------------- */
+
+  heartbeatPresence(userId: string, visible: boolean): void {
+    this.presence.set(userId, { userId, lastSeen: Date.now(), visible });
+  }
+
+  setPresenceVisibility(userId: string, visible: boolean): void {
+    const existing = this.presence.get(userId);
+    this.presence.set(userId, {
+      userId,
+      lastSeen: existing?.lastSeen ?? Date.now(),
+      visible,
+    });
+    this.scheduleFlush();
+  }
+
+  getPresence(userId: string): PresenceRecord | undefined {
+    return this.presence.get(userId);
   }
 
   publishSignedPreKey(record: SignedPreKeyRecord): void {
