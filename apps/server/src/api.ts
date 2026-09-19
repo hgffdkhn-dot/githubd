@@ -118,6 +118,68 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
 
 type Route = (ctx: Ctx, req: IncomingMessage, res: ServerResponse, body: Record<string, unknown>) => Promise<unknown>;
 
+/**
+ * 搜索配额：每用户每 60 秒最多 20 次
+ *
+ * 为什么需要：UID 是 6 位数字，取值空间仅 90 万。不限流的话，
+ * 拿一个合法账号就能遍历全部 UID，把整个用户名单扒走。
+ */
+const SEARCH_WINDOW_MS = 60_000;
+const SEARCH_MAX_PER_WINDOW = 20;
+const searchQuota = new Map<string, { count: number; resetAt: number }>();
+
+function consumeSearchQuota(userId: string): boolean {
+  const now = Date.now();
+  const entry = searchQuota.get(userId);
+  if (!entry || now > entry.resetAt) {
+    searchQuota.set(userId, { count: 1, resetAt: now + SEARCH_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= SEARCH_MAX_PER_WINDOW) return false;
+  entry.count += 1;
+  return true;
+}
+
+// 定期清理过期条目，避免长期运行后 Map 无限增长
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of searchQuota) {
+    if (now > entry.resetAt + SEARCH_WINDOW_MS) searchQuota.delete(key);
+  }
+}, 5 * 60_000).unref();
+
+/** 查询任意用户（陌生人）资料，供"搜到 UID 后先看一眼是谁" */
+async function handleUserProfile(ctx: Ctx, req: IncomingMessage): Promise<unknown> {
+  const match = /^\/v1\/profile\/user\/([^/]+)$/.exec(req.url ?? '');
+  const target = decodeURIComponent(match?.[1] ?? '');
+  if (!target) throw new HttpError(400, 'userId 缺失');
+
+  const profile = ctx.store.getProfile(target);
+  if (!profile) return { profile: null };
+
+  if (profile.visibility === 'public') {
+    return {
+      profile: {
+        visibility: 'public',
+        displayName: profile.publicFields?.displayName ?? '',
+        bio: profile.publicFields?.bio ?? '',
+        avatar: profile.avatar?.encrypted ? undefined : profile.avatar,
+        updatedAt: profile.updatedAt,
+      },
+    };
+  }
+
+  // friends 模式：只返回密文，解密权在持有资料密钥的好友手里
+  return {
+    profile: {
+      visibility: 'friends',
+      encrypted: profile.encrypted,
+      avatar: profile.avatar?.encrypted ? profile.avatar : undefined,
+      updatedAt: profile.updatedAt,
+    },
+  };
+}
+
 const routes: { method: string; pattern: RegExp; handler: Route }[] = [
   {
     method: 'POST',
@@ -148,7 +210,7 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       ctx.store.heartbeatPresence(user.id, true);
 
       const token = ctx.store.issueToken(user.id, deviceId);
-      return { userId: user.id, deviceId, token };
+      return { userId: user.id, deviceId, token, uid: user.uid };
     },
   },
   {
@@ -174,7 +236,7 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       });
       ctx.store.heartbeatPresence(user.id, true);
       const token = ctx.store.issueToken(user.id, deviceId);
-      return { userId: user.id, deviceId, token };
+      return { userId: user.id, deviceId, token, uid: user.uid };
     },
   },
   {
@@ -224,10 +286,16 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
     method: 'GET',
     pattern: /^\/v1\/users\/search$/,
     handler: async (ctx, req, _res, _body) => {
-      authenticate(req, ctx);
+      const { userId } = authenticate(req, ctx);
+
+      // 限流：6 位 UID 只有 90 万种取值，不限流可被遍历出整个用户列表
+      if (!consumeSearchQuota(userId)) {
+        throw new HttpError(429, '搜索过于频繁，请稍后再试');
+      }
+
       const url = new URL(req.url ?? '/', 'http://localhost');
       const q = url.searchParams.get('q') ?? '';
-      if (q.length < 1) return { users: [] };
+      if (q.trim().length < 1) return { users: [] };
       return { users: ctx.store.searchUsers(q) };
     },
   },

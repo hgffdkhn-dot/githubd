@@ -13,12 +13,22 @@ import type { DisplayPresence } from '../presence/PresenceManager.js';
 import type { ResolvedProfile } from '../profile/ProfileManager.js';
 import { avatarColorFor, initialOf } from '../profile/profileCrypto.js';
 
-/** 预置的演示联系人 */
+/**
+ * 预置的演示联系人
+ * uid 由 id 稳定派生，保证每次演示看到的是同一串数字
+ */
 export const DEMO_CONTACTS = [
   { id: 'demo-bob', username: 'bob' },
   { id: 'demo-carol', username: 'carol' },
   { id: 'demo-dave', username: 'dave' },
-];
+].map((c) => ({ ...c, uid: stableUid(c.id) }));
+
+/** 演示用 UID：由 id 稳定派生为 6 位数字 */
+export function stableUid(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return String(100000 + (hash % 900000));
+}
 
 /** 对方收到消息后模拟的回复 */
 const AUTO_REPLIES = [
@@ -38,6 +48,8 @@ export class MockEngine {
   private listeners = new Set<(message: DecryptedMessage) => void>();
   private timers: ReturnType<typeof setTimeout>[] = [];
   private currentUser = '';
+  /** 演示模式没有真实 UID，用稳定派生值占位 */
+  readonly uid = stableUid('demo-self');
   private replyIndex = 0;
 
   onMessage(listener: (message: DecryptedMessage) => void): () => void {
@@ -79,7 +91,7 @@ export class MockEngine {
     return Array.from({ length: 12 }, (_, i) => ((base * (i + 7)) % 10).toString()).join('');
   }
 
-  async searchUsers(query: string): Promise<{ id: string; username: string }[]> {
+  async searchUsers(query: string): Promise<{ id: string; username: string; uid: string }[]> {
     const q = query.trim().toLowerCase();
     if (!q) return DEMO_CONTACTS;
     return DEMO_CONTACTS.filter((c) => c.username.toLowerCase().includes(q));

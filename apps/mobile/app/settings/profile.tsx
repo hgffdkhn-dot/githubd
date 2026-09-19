@@ -25,10 +25,12 @@ export default function ProfileSettingsScreen() {
   const [visibility, setVisibility] = useState<Visibility>('friends');
   const [avatarBg, setAvatarBg] = useState('#6750a4');
   const [message, setMessage] = useState<string | null>(null);
+  const [myUid, setMyUid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!engine) return;
+    setMyUid(engine.uid);
     engine
       .loadMyProfile()
       .then((p) => {
@@ -73,8 +75,18 @@ export default function ProfileSettingsScreen() {
         <Text variant="titleMedium" style={styles.heroName}>
           {displayName || '未设置昵称'}
         </Text>
+
+        {/* UID 是加好友最可靠的方式：昵称会改，UID 终身不变 */}
+        <View style={styles.uidRow}>
+          <Text variant="bodySmall" style={styles.uidLabel}>
+            我的 UID
+          </Text>
+          <Text variant="titleMedium" style={styles.uidValue} selectable>
+            {myUid ?? '—'}
+          </Text>
+        </View>
         <Text variant="bodySmall" style={styles.heroSub}>
-          头像由昵称自动生成，不上传图片，避免新增服务端存图的隐私面
+          把这串数字发给好友，对方搜索即可找到你。昵称可改，UID 终身不变。
         </Text>
       </Surface>
 
@@ -147,7 +159,10 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   hero: { padding: 20, borderRadius: 16, alignItems: 'center', gap: 8 },
   heroName: { fontWeight: '700' },
-  heroSub: { opacity: 0.65, textAlign: 'center', lineHeight: 18 },
+  heroSub: { opacity: 0.65, textAlign: 'center', lineHeight: 18, marginTop: 4 },
+  uidRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  uidLabel: { opacity: 0.6 },
+  uidValue: { fontWeight: '700', letterSpacing: 2, fontFamily: 'monospace' },
   card: { padding: 16, borderRadius: 16 },
   input: { marginBottom: 12 },
   divider: { marginVertical: 12 },

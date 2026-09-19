@@ -25,7 +25,7 @@ import {
 
 import { ApiClient } from '../network/Api.js';
 import { MessageStream } from '../network/MessageStream.js';
-import { SecurePreKeyStore, loadIdentity, loadToken, saveIdentity, saveDeviceId, loadDeviceId, saveToken, savePreKeyPrivate, SPK_PREFIX, OPK_PREFIX } from '../crypto/Keystore.js';
+import { saveIdentity, loadIdentity, saveDeviceId, loadDeviceId, saveMyUid, loadMyUid } from '../crypto/Keystore.js';
 import { SqliteSessionStore } from '../storage/SessionRepository.js';
 import { saveMessage, updateMessageStatus, listMessages, openDatabase } from '../storage/Database.js';
 import { bootstrapCrypto } from '../crypto/QuickCryptoAead.js';
@@ -57,6 +57,7 @@ export class ChatEngine {
   private deviceId = '';
   private userId = '';
   private token = '';
+  private myUid: string | null = null;
   private presence: PresenceManager | null = null;
   private profiles: ProfileManager | null = null;
   private nextOpkId = 1;
@@ -88,6 +89,11 @@ export class ChatEngine {
   /** 当前会话令牌，供资料/在线状态等模块复用 */
   get authToken(): string {
     return this.token;
+  }
+
+  /** 自己的 UID，供个人主页展示 */
+  get uid(): string | null {
+    return this.myUid;
   }
 
   /** 身份私钥：仅用于派生资料密钥，绝不外传 */
@@ -263,14 +269,25 @@ export class ChatEngine {
     this.token = token;
     this.identity = identity;
     this.deviceId = deviceId;
+    this.myUid = await loadMyUid();
     return true;
   }
 
-  private async completeAuth(result: { userId: string; deviceId: string; token: string }): Promise<void> {
+  private async completeAuth(
+    result: { userId: string; deviceId: string; token: string; uid?: string },
+  ): Promise<void> {
     this.userId = result.userId;
     this.deviceId = result.deviceId;
     this.token = result.token;
     await saveToken(result.token);
+
+    // UID 服务端生成后不变，本地缓存一份以便重启后仍可展示
+    if (result.uid) {
+      this.myUid = result.uid;
+      await saveMyUid(result.uid);
+    } else {
+      this.myUid = await loadMyUid();
+    }
 
     this.manager = new SessionManager(
       this.identity!,

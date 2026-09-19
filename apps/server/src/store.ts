@@ -5,13 +5,23 @@
  * 能落库的只有四类东西：账号认证材料、公开密钥材料、密文信封、投递状态。
  */
 
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 export interface UserRecord {
   id: string;
   username: string;
+  /**
+   * 6 位数字 UID，注册时由服务端生成，之后**永不变更**。
+   *
+   * 为什么需要：用户名可能重复相似、含特殊字符、难口述；
+   * 6 位数字便于口头交换（"加我，UID 483920"）。
+   *
+   * ⚠️ 注意：UID 只是**可发现的公开标识**，绝不是身份凭证。
+   * 任何接口都不得仅凭 UID 授权，必须走完整的端到端握手。
+   */
+  uid: string;
   passwordSalt: string;
   passwordHash: string;
   createdAt: number;
@@ -123,6 +133,7 @@ const LOW_PREKEY_THRESHOLD = 20;
 export class Store {
   private users = new Map<string, UserRecord>();
   private usernameIndex = new Map<string, string>();
+  private uidIndex = new Map<string, string>();
   private devices = new Map<string, DeviceRecord>();
   private signedPreKeys = new Map<string, SignedPreKeyRecord>();
   private oneTimePreKeys = new Map<string, OneTimePreKeyRecord>();
@@ -147,6 +158,12 @@ export class Store {
       for (const u of raw.users ?? []) {
         this.users.set(u.id, u);
         this.usernameIndex.set(u.username, u.id);
+        // 兼容旧快照：早期用户没有 uid，载入时补一个
+        if (!u.uid) {
+          u.uid = this.allocateUid();
+          this.scheduleFlush();
+        }
+        this.uidIndex.set(u.uid, u.id);
       }
       for (const d of raw.devices ?? []) this.devices.set(`${d.userId}::${d.id}`, d);
       for (const s of raw.signedPreKeys ?? []) {
@@ -194,11 +211,41 @@ export class Store {
 
   createUser(username: string, passwordSalt: string, passwordHash: string): UserRecord {
     const id = randomBytes(16).toString('hex');
-    const record: UserRecord = { id, username, passwordSalt, passwordHash, createdAt: Date.now() };
+    const record: UserRecord = {
+      id,
+      username,
+      uid: this.allocateUid(),
+      passwordSalt,
+      passwordHash,
+      createdAt: Date.now(),
+    };
     this.users.set(id, record);
     this.usernameIndex.set(username, id);
+    this.uidIndex.set(record.uid, id);
     this.scheduleFlush();
     return record;
+  }
+
+  /**
+   * 分配一个未被占用的 6 位 UID
+   *
+   * ⚠️ 必须查重。**不能用 randomInt 直接生成就完事**：
+   * 6 位数字只有 90 万个取值，按生日悖论，纯随机在约 1000 个用户时
+   * 碰撞概率就高达 ~39%，一旦撞号，"搜 UID 加好友"会加错人。
+   *
+   * 查重后是"构造性唯一"，代价只是用户量很大时重试次数变多。
+   */
+  private allocateUid(): string {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const candidate = String(randomInt(100000, 1000000)); // [100000, 999999]
+      if (!this.uidIndex.has(candidate)) return candidate;
+    }
+    // 极端情况：随机碰撞 50 次都没中，退化为顺序扫描找空位
+    for (let n = 100000; n < 1000000; n++) {
+      const candidate = String(n);
+      if (!this.uidIndex.has(candidate)) return candidate;
+    }
+    throw new Error('UID 空间已耗尽');
   }
 
   findUserByUsername(username: string): UserRecord | undefined {
@@ -206,16 +253,34 @@ export class Store {
     return id ? this.users.get(id) : undefined;
   }
 
+  findUserByUid(uid: string): UserRecord | undefined {
+    const id = this.uidIndex.get(uid);
+    return id ? this.users.get(id) : undefined;
+  }
+
   findUserById(id: string): UserRecord | undefined {
     return this.users.get(id);
   }
 
-  searchUsers(query: string, limit = 20): { id: string; username: string }[] {
-    const q = query.toLowerCase();
+  /**
+   * 搜索：用户名模糊匹配 + UID 精确匹配
+   *
+   * UID 走精确匹配而不是模糊，避免搜 "123" 时把一堆人拉出来。
+   */
+  searchUsers(query: string, limit = 20): { id: string; username: string; uid: string }[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+
+    // 纯 6 位数字：先当 UID 精确查，命中就直接返回（最符合"加我 UID"的预期）
+    const byUid = this.findUserByUid(q);
+    if (byUid) {
+      return [{ id: byUid.id, username: byUid.username, uid: byUid.uid }];
+    }
+
     return [...this.users.values()]
       .filter((u) => u.username.toLowerCase().includes(q))
       .slice(0, limit)
-      .map((u) => ({ id: u.id, username: u.username }));
+      .map((u) => ({ id: u.id, username: u.username, uid: u.uid }));
   }
 
   /* ---------------- 令牌 ---------------- */

@@ -22,7 +22,7 @@ export interface EngineLike {
   sendText(peerUserId: string, peerDeviceId: string, text: string): Promise<void>;
   resolvePeerDevice(userId: string): Promise<{ deviceId: string; identityKey: Uint8Array }>;
   safetyNumberWith(peerIdentityKey: Uint8Array): string;
-  searchUsers(query: string): Promise<{ id: string; username: string }[]>;
+  searchUsers(query: string): Promise<{ id: string; username: string; uid: string }[]>;
   stop(): void;
   // 设备管理
   listMyDevices(): Promise<MyDevice[]>;
@@ -31,6 +31,8 @@ export interface EngineLike {
   loadMyProfile(): Promise<OwnProfileView>;
   saveMyProfile(input: { displayName: string; bio: string }, visibility: 'friends' | 'public'): Promise<void>;
   loadPeerProfile(userId: string): Promise<OwnProfileView>;
+  /** 自己的 UID，无服务端时（演示模式）返回 null */
+  readonly uid: string | null;
   // 在线状态
   startPresence(shareOnline: boolean): Promise<void>;
   setPresenceSharing(value: boolean): void;
@@ -48,7 +50,7 @@ interface ChatContextValue {
   register: (username: string, password: string) => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
   send: (peerUserId: string, peerDeviceId: string, text: string) => Promise<void>;
-  search: (query: string) => Promise<{ id: string; username: string }[]>;
+  search: (query: string) => Promise<{ id: string; username: string; uid: string }[]>;
   changeServer: (url: string) => Promise<void>;
   restoreServer: () => Promise<void>;
   enterDemo: () => Promise<void>;

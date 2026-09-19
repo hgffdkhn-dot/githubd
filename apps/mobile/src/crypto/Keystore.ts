@@ -19,6 +19,7 @@ const SPK_PREFIX = 'e2ee.spk.';
 const OPK_PREFIX = 'e2ee.opk.';
 const SESSION_KEY = 'e2ee.session.token';
 const DEVICE_ID_KEY = 'e2ee.device.id';
+const MY_UID_KEY = 'e2ee.my.uid';
 const DB_KEY = 'e2ee.dbkey';
 
 export interface StoredIdentity {
@@ -92,6 +93,15 @@ export async function loadToken(): Promise<string | null> {
 
 export async function saveDeviceId(deviceId: string): Promise<void> {
   await safeStore.setItem(DEVICE_ID_KEY, deviceId);
+}
+
+export async function saveMyUid(uid: string): Promise<void> {
+  await safeStore.setItem(MY_UID_KEY, uid);
+}
+
+/** 读取本地缓存的 UID；服务端生成的 UID 终身不变，缓存是安全的 */
+export async function loadMyUid(): Promise<string | null> {
+  return safeStore.getItem(MY_UID_KEY);
 }
 
 export async function loadDeviceId(): Promise<string | null> {

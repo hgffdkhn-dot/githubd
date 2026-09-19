@@ -153,13 +153,16 @@ export class ApiClient {
     return result.devices;
   }
 
-  async searchUsers(token: string, query: string): Promise<{ id: string; username: string }[]> {
-    const result = await this.request<{ users: { id: string; username: string }[] }>(
+  async searchUsers(
+    token: string,
+    query: string,
+  ): Promise<{ id: string; username: string; uid: string }[]> {
+    const result = await this.request<{ users: { id: string; username: string; uid: string }[] }>(
       `/v1/users/search?q=${encodeURIComponent(query)}`,
       {},
       token,
     );
-    return result.users;
+    return result.users.map((u) => ({ id: u.id, username: u.username, uid: u.uid ?? '' }));
   }
 
   async sendEnvelope(token: string, envelope: EnvelopeDto): Promise<{ envelopeId: string; queued: boolean }> {

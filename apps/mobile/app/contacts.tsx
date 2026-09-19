@@ -24,7 +24,7 @@ export default function ContactsScreen() {
   const theme = useTheme();
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<{ id: string; username: string }[]>([]);
+  const [results, setResults] = useState<{ id: string; username: string; uid: string }[]>([]);
   const [presence, setPresence] = useState<Record<string, DisplayPresence>>({});
   const [busy, setBusy] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -69,7 +69,7 @@ export default function ContactsScreen() {
       <Surface style={styles.searchBar} elevation={2}>
         <View style={styles.searchRow}>
           <TextInput
-            label="搜索用户名"
+            label="搜索用户名或 UID"
             mode="outlined"
             value={query}
             onChangeText={setQuery}
@@ -97,7 +97,16 @@ export default function ContactsScreen() {
           return (
             <List.Item
               title={item.username}
-              description={p && !p.hidden ? p.label : '点击建立加密会话'}
+              description={item.uid ? `UID ${item.uid}` : ''}
+              // 在线状态放右侧，UID 作为副标题，避免两行信息挤在一起
+              right={(props) => (
+                <View style={styles.rightWrap}>
+                  <Text variant="bodySmall" style={{ opacity: 0.6 }}>
+                    {p && !p.hidden ? p.label : ''}
+                  </Text>
+                  <List.Icon {...props} icon="chevron-right" />
+                </View>
+              )}
               left={() => (
                 <Avatar
                   label={initialOf(item.username, '?')}
@@ -120,7 +129,7 @@ export default function ContactsScreen() {
           <View style={styles.empty}>
             <IconButton icon="account-search" size={40} iconColor={theme.colors.outline} />
             <Text variant="bodyMedium" style={{ opacity: 0.6 }}>
-              {searched ? '没有找到该用户' : '输入用户名开始搜索'}
+              {searched ? '没有找到该用户' : '输入用户名或 6 位 UID 搜索'}
             </Text>
           </View>
         }
@@ -136,4 +145,5 @@ const styles = StyleSheet.create({
   input: { flex: 1, backgroundColor: 'transparent' },
   loader: { marginTop: 16 },
   empty: { alignItems: 'center', marginTop: 48, gap: 4 },
+  rightWrap: { flexDirection: 'row', alignItems: 'center', gap: 4 },
 });
