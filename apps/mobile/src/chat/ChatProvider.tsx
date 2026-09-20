@@ -13,7 +13,6 @@ import { applyProxy } from '../../modules/e2ee-proxy/src/index.js';
 import type { Friend } from '../friends/Friends.js';
 import type { ConversationSummary } from './ChatEngine.js';
 import type { StreamStatus } from '../network/MessageStream.js';
-import type { StreamStatus } from '../network/MessageStream.js';
 
 type OwnProfileView = ResolvedProfile;
 export type { MyDevice, DisplayPresence, OwnProfileView };

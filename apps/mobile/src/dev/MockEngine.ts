@@ -14,7 +14,6 @@ import type { DisplayPresence } from '../presence/PresenceManager.js';
 import type { ResolvedProfile } from '../profile/ProfileManager.js';
 import { avatarColorFor, initialOf } from '../profile/profileCrypto.js';
 import { MemoryFriendStore, type Friend } from '../friends/Friends.js';
-import type { StreamStatus } from '../network/MessageStream.js';
 
 /**
  * 预置的演示联系人
@@ -80,11 +79,9 @@ export class MockEngine {
   // 会话列表与历史：演示模式不持久化，历史恒为空
   // ------------------------------------------------------------------
 
-  // 演示模式不联网，固定显示"已连接"，避免界面上一直挂着"连接中…"
-  private connectionStatusValue: StreamStatus = 'open';
-
+  // 演示模式不联网，连接状态恒为 open，避免主界面一直显示"连接中…"
   get connectionStatus(): StreamStatus {
-    return this.connectionStatusValue;
+    return 'open';
   }
 
   onConnectionChange(_listener: (s: StreamStatus) => void): () => void {
@@ -93,13 +90,6 @@ export class MockEngine {
 
   async listConversations(): Promise<ConversationSummary[]> {
     return [];
-  }
-
-  /** 演示模式不联网，连接状态恒为 open，避免主界面一直显示"连接中…" */
-  readonly connectionStatus: StreamStatus = 'open';
-
-  onConnectionChange(_listener: (s: StreamStatus) => void): () => void {
-    return () => undefined;
   }
 
   async resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null> {

@@ -213,8 +213,56 @@ for (const f of files) {
   });
 }
 
+const rel = (p) => path.relative(process.cwd(), p);
+
 // 2) 逐文件检查：用到别人的导出却没 import
 const problems = [];
+
+/**
+ * 重复导入检查
+ *
+ * 同一行 import 出现两次会直接让 Babel 报
+ * `Identifier 'X' has already been declared`，bundling 失败。
+ * 这种错误只能等 Metro 跑到才知道，加在这里几秒就能拦下。
+ */
+const dupProblems = [];
+for (const [file, info] of fileInfo) {
+  const src = readFileSync(file, 'utf8');
+  const lines = src.split('\n');
+
+  // (a) 完全相同的 import 行出现多次
+  const seen = new Map();
+  lines.forEach((ln, i) => {
+    if (!/^\s*import\s+(?:type\s+)?\{.*\}\s*from\s*['"]/.test(ln)) return;
+    const key = ln.trim();
+    if (seen.has(key)) dupProblems.push({ file, kind: '重复行', detail: key, line: i + 1 });
+    else seen.set(key, i + 1);
+  });
+
+  // (b) 同一个本地名从多处导入
+  const byName = new Map();
+  for (const ln of lines) {
+    const m = /^\s*import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/.exec(ln);
+    if (!m) continue;
+    for (const raw of m[1].split(',')) {
+      let tok = raw.trim().split(/\s+as\s+/).pop().trim();
+      tok = tok.split(':').pop().trim();
+      if (!/^[A-Za-z_$][\w$]*$/.test(tok)) continue;
+      if (byName.has(tok)) dupProblems.push({ file, kind: '同名重复', detail: `${tok} ← ${m[2]}`, line: 0 });
+      else byName.set(tok, m[2]);
+    }
+  }
+}
+
+if (dupProblems.length > 0) {
+  console.error(`发现 ${dupProblems.length} 处重复导入：\n`);
+  for (const d of dupProblems) {
+    console.error(`  [${d.kind}] ${rel(d.file)}${d.line ? `:${d.line}` : ''}`);
+    console.error(`      ${d.detail}`);
+  }
+  console.error('\nBabel 会直接报 Identifier has already been declared，bundling 失败。');
+  process.exit(1);
+}
 
 for (const [file, info] of fileInfo) {
   for (const [name, owners] of exportedBy) {
@@ -250,8 +298,6 @@ for (const [file, info] of fileInfo) {
     });
   }
 }
-
-const rel = (p) => path.relative(process.cwd(), p);
 
 if (problems.length > 0) {
   console.error(`发现 ${problems.length} 处"使用但未导入"：\n`);
