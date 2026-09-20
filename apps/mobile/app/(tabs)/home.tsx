@@ -44,7 +44,16 @@ interface Row {
 }
 
 export default function HomeScreen() {
-  const { engine, demo, leaveDemo, listFriends, removeFriend, listConversations } = useChat();
+  const {
+    engine,
+    demo,
+    leaveDemo,
+    listFriends,
+    removeFriend,
+    listConversations,
+    resolveUser,
+    connectionStatus,
+  } = useChat();
   const router = useRouter();
   const theme = useTheme();
 
@@ -53,6 +62,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [pendingRemove, setPendingRemove] = useState<Row | null>(null);
   const [removing, setRemoving] = useState(false);
+  const connected = connectionStatus === 'open';
 
   const refresh = useCallback(async () => {
     if (!engine) return;
@@ -69,12 +79,29 @@ export default function HomeScreen() {
       for (const c of conversations) {
         merged.push({
           userId: c.userId,
-          username: friendById.get(c.userId)?.username ?? '未知用户',
+          // 本地没好友记录时先放空，稍后统一向服务端回填真名，
+          // 直接写"未知用户"会让人以为是故障
+          username: friendById.get(c.userId)?.username ?? '',
           preview: c.preview,
           lastAt: c.lastAt,
           friend: friendById.get(c.userId) ?? null,
           conversation: c,
         });
+      }
+
+      // 回填未知用户名：会话存在但本地无好友记录（对方删了我 / 换设备聊过）
+      const unknown = merged.filter((r) => !r.username).map((r) => r.userId);
+      if (unknown.length > 0) {
+        const resolved = await Promise.all(
+          unknown.map((id) => resolveUser(id).catch(() => null)),
+        );
+        const nameById = new Map<string, string>();
+        resolved.forEach((u, i) => {
+          if (u?.username) nameById.set(unknown[i], u.username);
+        });
+        for (const r of merged) {
+          if (!r.username) r.username = nameById.get(r.userId) ?? r.userId.slice(0, 8);
+        }
       }
 
       // 2) 还没聊过的好友：按添加时间倒序排在后面
@@ -101,7 +128,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [engine, listFriends, listConversations]);
+  }, [engine, listFriends, listConversations, resolveUser]);
 
   // 每次回到主界面都刷新：聊完返回后能立刻看到最新消息
   useFocusEffect(
@@ -128,9 +155,23 @@ export default function HomeScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+      {/*
+        右上角显示连接状态；搜索入口只保留下方 FAB 一个，
+        顶栏再加一个会重复（这也是之前被指出的两个按钮问题）
+      */}
       <Appbar.Header>
         <Appbar.Content title="会话" />
-        <Appbar.Action icon="account-plus" onPress={() => router.push('/search')} />
+        <View style={styles.statusWrap}>
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: connected ? '#2e7d32' : theme.colors.outline },
+            ]}
+          />
+          <Text variant="bodySmall" style={styles.statusText}>
+            {connected ? '通信中' : '连接中…'}
+          </Text>
+        </View>
       </Appbar.Header>
 
       {demo ? <DemoBanner onExit={() => void leaveDemo()} /> : null}
@@ -267,4 +308,7 @@ const styles = StyleSheet.create({
   time: { opacity: 0.55, fontSize: 11 },
   presenceText: { opacity: 0.5, fontSize: 11 },
   fab: { position: 'absolute', right: 16, bottom: 16 },
+  statusWrap: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingRight: 14 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusText: { opacity: 0.85, fontSize: 12 },
 });

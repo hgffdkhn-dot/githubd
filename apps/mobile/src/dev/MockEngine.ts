@@ -8,11 +8,13 @@
  */
 
 import type { DecryptedMessage, ConversationSummary } from '../chat/ChatEngine.js';
+import type { StreamStatus } from '../network/MessageStream.js';
 import type { MyDevice } from '../network/Api.js';
 import type { DisplayPresence } from '../presence/PresenceManager.js';
 import type { ResolvedProfile } from '../profile/ProfileManager.js';
 import { avatarColorFor, initialOf } from '../profile/profileCrypto.js';
 import { MemoryFriendStore, type Friend } from '../friends/Friends.js';
+import type { StreamStatus } from '../network/MessageStream.js';
 
 /**
  * 预置的演示联系人
@@ -78,12 +80,40 @@ export class MockEngine {
   // 会话列表与历史：演示模式不持久化，历史恒为空
   // ------------------------------------------------------------------
 
+  // 演示模式不联网，固定显示"已连接"，避免界面上一直挂着"连接中…"
+  private connectionStatusValue: StreamStatus = 'open';
+
+  get connectionStatus(): StreamStatus {
+    return this.connectionStatusValue;
+  }
+
+  onConnectionChange(_listener: (s: StreamStatus) => void): () => void {
+    return () => undefined;
+  }
+
   async listConversations(): Promise<ConversationSummary[]> {
     return [];
   }
 
+  /** 演示模式不联网，连接状态恒为 open，避免主界面一直显示"连接中…" */
+  readonly connectionStatus: StreamStatus = 'open';
+
+  onConnectionChange(_listener: (s: StreamStatus) => void): () => void {
+    return () => undefined;
+  }
+
+  async resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null> {
+    const c = DEMO_CONTACTS.find((x) => x.id === userId);
+    return c ? { id: c.id, username: c.username, uid: c.uid } : null;
+  }
+
   async loadHistory(_peerUserId: string, _peerDeviceId: string): Promise<DecryptedMessage[]> {
     return [];
+  }
+
+  async resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null> {
+    const c = DEMO_CONTACTS.find((x) => x.id === userId);
+    return c ? { id: c.id, username: c.username, uid: c.uid } : null;
   }
 
   async ensureUid(): Promise<string | null> {

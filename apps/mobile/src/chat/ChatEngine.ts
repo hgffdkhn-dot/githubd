@@ -24,7 +24,7 @@ import {
 } from '@e2ee/protocol';
 
 import { ApiClient } from '../network/Api.js';
-import { MessageStream } from '../network/MessageStream.js';
+import { MessageStream, type StreamStatus } from '../network/MessageStream.js';
 import {
   saveIdentity,
   loadIdentity,
@@ -55,7 +55,7 @@ import type { MyDevice } from '../network/Api.js';
 import { getDeviceLabel } from '../device/deviceInfo.js';
 import { SqliteFriendStore, type Friend, type FriendStore } from '../friends/Friends.js';
 import { deleteFriend, deleteAllFriends, clearAllMessages } from '../storage/Database.js';
-import { previewsEnabled, initPreviewsFlag } from '../settings/security.js';
+import { previewsEnabled, initPreviewsFlag, initBurnAfterExit } from '../settings/security.js';
 
 type OwnProfileView = ResolvedProfile;
 export type { OwnProfileView, DisplayPresence, MyDevice };
@@ -68,6 +68,8 @@ const SPK_ROTATION_MS = 7 * 24 * 3600 * 1000;
 export interface ConversationSummary {
   userId: string;
   peerKey: string;
+  /** 用户名；本地没有好友记录时由服务端回填，仍拿不到则为 null */
+  username?: string | null;
   /** 最后一条消息的明文预览；关闭本地缓存时为空串 */
   preview: string;
   lastAt: number;
@@ -95,6 +97,8 @@ export class ChatEngine {
   private presence: PresenceManager | null = null;
   private profiles: ProfileManager | null = null;
   private friendStore: FriendStore = new SqliteFriendStore();
+  private connection: StreamStatus = 'closed';
+  private connectionListeners = new Set<(s: StreamStatus) => void>();
   private nextOpkId = 1;
   private spkId = 1;
   private spkGeneratedAt = 0;
@@ -337,6 +341,8 @@ export class ChatEngine {
       ...this.deviceInfo(),
     });
     await this.completeAuth(result);
+    // 登录也刷新一次设备名：老账号此前可能存的是占位值
+    void this.reportDeviceLabel();
     await this.rotateSignedPreKeyIfNeeded();
   }
 
@@ -412,7 +418,25 @@ export class ChatEngine {
     this.identity = identity;
     this.deviceId = deviceId;
     this.myUid = await loadMyUid();
+    // 会话恢复不走 register/login，所以设备名必须在这里补上报，
+    // 否则老设备永远显示占位文案
+    void this.reportDeviceLabel();
     return true;
+  }
+
+  /**
+   * 上报本设备展示名
+   *
+   * 失败一律忽略：设备名只是展示信息，不能因为它失败而影响登录。
+   */
+  private async reportDeviceLabel(): Promise<void> {
+    if (!this.token || !this.deviceId) return;
+    try {
+      const info = this.deviceInfo();
+      await this.api.updateDeviceLabel(this.token, this.deviceId, info.deviceLabel, info.devicePlatform);
+    } catch {
+      // 忽略
+    }
   }
 
   private async completeAuth(
@@ -442,6 +466,17 @@ export class ChatEngine {
   async start(): Promise<void> {
     if (!this.token) throw new Error('ChatEngine: 未登录');
     openDatabase();
+
+    // 阅后即焚：开启时每次启动先清空本地消息。
+    // 必须在建 manager / 连流之前，否则列表会先读到旧数据再被清掉。
+    if (await initBurnAfterExit()) {
+      try {
+        clearAllMessages();
+      } catch {
+        // 清不掉就算了，不影响正常使用
+      }
+    }
+
     // 预览开关要在任何消息落库之前就绪，否则第一条消息会用错默认值
     await initPreviewsFlag();
     if (!this.manager) {
@@ -460,11 +495,31 @@ export class ChatEngine {
       onPreKeyLow: (remaining) => {
         if (remaining < OPK_REPLENISH_THRESHOLD) void this.replenishOneTimePreKeys();
       },
+      onStatus: (status) => this.setConnection(status),
+      // 断线重连后必须补拉：断开期间服务端堆积的信封不会自动重推
+      onReconnect: () => {
+        void this.drainPending();
+      },
     });
     this.stream.connect();
 
+    // 刷新本设备展示名：会话恢复路径不走 register/login，
+    // 设备型号就永远停留在旧值（表现为设备管理里一直显示占位文案）
+    void this.refreshDeviceLabel();
+
     // 重连/冷启动后补齐离线消息
     await this.drainPending();
+  }
+
+  /** 上报本设备型号；失败不影响登录，下次启动会再试 */
+  async refreshDeviceLabel(): Promise<void> {
+    if (!this.token || !this.deviceId) return;
+    try {
+      const { deviceLabel, devicePlatform } = this.deviceInfo();
+      await this.api.updateDeviceLabel(this.token, this.deviceId, deviceLabel, devicePlatform);
+    } catch {
+      // 设备名只是展示信息，失败无所谓
+    }
   }
 
   private async replenishOneTimePreKeys(): Promise<void> {
@@ -475,6 +530,22 @@ export class ChatEngine {
       await savePreKeyPrivate(OPK_PREFIX, opk.keyId, opk.privateKey);
     }
     await this.api.publishPreKeys(this.token, { oneTimePreKeys: bundle.oneTimePreKeys });
+  }
+
+  /** 当前长连接状态，UI 用它显示"通信中 / 连接中…" */
+  get connectionStatus(): StreamStatus {
+    return this.connection;
+  }
+
+  onConnectionChange(listener: (status: StreamStatus) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
+  }
+
+  private setConnection(status: StreamStatus): void {
+    if (this.connection === status) return;
+    this.connection = status;
+    for (const l of this.connectionListeners) l(status);
   }
 
   async drainPending(): Promise<void> {
@@ -607,16 +678,64 @@ export class ChatEngine {
     }));
   }
 
+  /**
+   * 按 userId 查用户名
+   *
+   * 会话列表里可能出现"本地没有好友记录"的用户（例如对方删了我、
+   * 或我在另一台设备上聊过），这时只能向服务端问一次名字。
+   * 结果不落库：用户名可变，缓存了反而会显示错的名字。
+   */
+  async resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null> {
+    if (!this.token) return null;
+    try {
+      return await this.api.getUserById(this.token, userId);
+    } catch {
+      return null;
+    }
+  }
+
   /** 主界面会话列表：有聊天记录的会话，按最近时间倒序 */
   async listConversations(): Promise<ConversationSummary[]> {
     const rows = listConversationsRaw(previewsEnabled());
-    return rows.map((r) => ({
+    const out = rows.map((r) => ({
       userId: r.userId,
       peerKey: r.peerKey,
       preview: r.preview,
       lastAt: r.lastAt,
       messageCount: r.messageCount,
+      username: null as string | null,
     }));
+
+    // 回填用户名：会话存在但本地没有好友记录时（好友被删、换设备、
+    // 或在搜索页刚添加还没入库），会显示"未知用户"。
+    // 这里向服务端查一次并顺带补进好友名单，之后再进就不必再查。
+    const known = new Set((await this.friendStore.list().catch(() => [])).map((f) => f.userId));
+    const missing = out.filter((c) => !known.has(c.userId)).map((c) => c.userId);
+
+    for (const userId of missing.slice(0, 20)) {
+      const info = await this.resolveUser(userId);
+      if (!info?.username) continue;
+      for (const c of out) if (c.userId === userId) c.username = info.username;
+      // 补进好友名单，避免每次进主界面都查一次
+      await this.friendStore.add({ userId, username: info.username, uid: info.uid }).catch(() => undefined);
+    }
+    return out;
+  }
+
+  private userCache = new Map<string, { id: string; username: string; uid: string } | null>();
+
+  /** 查用户信息；查不到返回 null（不抛，UI 自行降级展示） */
+  async resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null> {
+    if (this.userCache.has(userId)) return this.userCache.get(userId) ?? null;
+    if (!this.token) return null;
+    let info: { id: string; username: string; uid: string } | null = null;
+    try {
+      info = await this.api.getUserById(this.token, userId);
+    } catch {
+      info = null;
+    }
+    this.userCache.set(userId, info);
+    return info;
   }
 
   async listConversation(peerUserId: string, peerDeviceId: string): Promise<{ envelopeId: string; ciphertext: string }[]> {

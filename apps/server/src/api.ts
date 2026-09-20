@@ -50,14 +50,36 @@ function assertNoForbiddenFields(value: unknown, path = ''): void {
 }
 
 /** 设备展示信息：用户自报，仅用于"最近登录"列表，不参与任何安全判断 */
+/** 占位设备名：客户端没上报时用；不要用"未命名设备"这种让人困惑的文案 */
+const FALLBACK_DEVICE_LABEL = 'Android 设备';
+
 function readDeviceLabel(body: Record<string, unknown>): string {
-  const raw = body.deviceLabel;
-  if (typeof raw !== 'string') return '未命名设备';
-  return raw.slice(0, 64);
+  const raw = body.deviceLabel ?? body.label;
+  if (typeof raw !== 'string') return FALLBACK_DEVICE_LABEL;
+  const trimmed = raw.trim();
+  // 空串与历史遗留的占位值都换成兜底文案
+  if (!trimmed || trimmed === '未命名设备' || trimmed === '未知设备') return FALLBACK_DEVICE_LABEL;
+  return trimmed.slice(0, 64);
+}
+
+/**
+ * 把历史遗留的占位设备名换成可读文案
+ *
+ * 老快照里可能存着 "未命名设备" / "未知设备" / 空串 —— 这些是早期
+ * 客户端没上报设备信息时留下的。现在展示层统一兜底，
+ * 不用等所有设备重新登录才修复。
+ */
+function normalizeStoredLabel(label: unknown, platform: unknown): string {
+  if (typeof label === 'string') {
+    const trimmed = label.trim();
+    if (trimmed && trimmed !== '未命名设备' && trimmed !== '未知设备') return trimmed.slice(0, 64);
+  }
+  const p = typeof platform === 'string' ? platform.toLowerCase() : '';
+  return p === 'ios' ? 'iOS 设备' : 'Android 设备';
 }
 
 function readDevicePlatform(body: Record<string, unknown>): string {
-  const raw = body.devicePlatform;
+  const raw = body.devicePlatform ?? body.platform;
   if (typeof raw !== 'string') return 'unknown';
   return raw.slice(0, 32);
 }
@@ -306,7 +328,8 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       const { userId, deviceId } = authenticate(req, ctx);
       const devices = ctx.store.listDevices(userId).map((d) => ({
         id: d.id,
-        label: d.label,
+        // 老记录可能存着历史占位值，输出时统一换成可读文案
+        label: normalizeStoredLabel(d.label, d.platform),
         platform: d.platform,
         createdAt: d.createdAt,
         lastSeen: d.lastSeen,
@@ -316,6 +339,38 @@ const routes: { method: string; pattern: RegExp; handler: Route }[] = [
       // 最近登录在前
       devices.sort((a, b) => b.lastSeen - a.lastSeen);
       return { devices };
+    },
+  },
+  {
+    // 会话恢复路径不走 register/login，设备名会一直停留在旧值。
+    // 这个接口让任何登录态都能刷新本设备的展示名称。
+    method: 'POST',
+    pattern: /^\/v1\/devices\/label$/,
+    handler: async (ctx, req, _res, body) => {
+      const { userId, deviceId } = authenticate(req, ctx);
+      const target = typeof body.deviceId === 'string' ? body.deviceId : '';
+      // 只允许改自己的当前设备，避免越权改别人的设备名
+      if (target !== deviceId) throw new HttpError(403, '只能修改当前设备');
+      const existing = ctx.store.getDevice(userId, deviceId);
+      if (!existing) throw new HttpError(404, '设备不存在');
+      ctx.store.upsertDevice({
+        ...existing,
+        label: readDeviceLabel(body),
+        platform: readDevicePlatform(body),
+      });
+      return { ok: true };
+    },
+  },
+  {
+    // 用 userId 回填用户名：会话列表里可能出现"本地没有好友记录"的用户
+    method: 'GET',
+    pattern: /^\/v1\/users\/([^/]+)$/,
+    handler: async (ctx, req) => {
+      authenticate(req, ctx);
+      const match = /^\/v1\/users\/([^/]+)$/.exec(req.url ?? '')!;
+      const user = ctx.store.findUserById(decodeURIComponent(match[1]));
+      if (!user) return { user: null };
+      return { user: { id: user.id, username: user.username, uid: user.uid } };
     },
   },
   {

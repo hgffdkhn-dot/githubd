@@ -24,14 +24,16 @@ import { useRouter } from 'expo-router';
 import {
   loadPreviewsEnabled,
   setPreviewsEnabled,
+  loadBurnAfterExit,
+  setBurnAfterExit,
   loadProxy,
   saveProxy,
   clearProxy,
   validateProxy,
   type ProxyConfig,
   type ProxyProtocol,
+  setPreviewsEnabledSync,
 } from '../../../src/settings/security.js';
-import { setPreviewsEnabledSync } from '../../../src/settings/security.js';
 import { applyProxy as applyNativeProxy, clearProxy as clearNativeProxy, isProxySupported, currentProxy } from '../../../modules/e2ee-proxy/src/index.js';
 
 const DEFAULT_PORT: Record<ProxyProtocol, string> = { http: '8080', socks5: '1080' };
@@ -40,8 +42,9 @@ export default function SecurityScreen() {
   const theme = useTheme();
   const router = useRouter();
 
-  // ---- 本地消息缓存 ----
+  // ---- 本地消息缓存 / 阅后即焚 ----
   const [previews, setPreviews] = useState(true);
+  const [burn, setBurn] = useState(false);
 
   // ---- 代理 ----
   const [proxySupported, setProxySupported] = useState(false);
@@ -58,6 +61,7 @@ export default function SecurityScreen() {
   useEffect(() => {
     setProxySupported(isProxySupported());
     void loadPreviewsEnabled().then(setPreviews);
+    void loadBurnAfterExit().then(setBurn);
     void loadProxy().then((c: ProxyConfig) => {
       setEnabled(c.enabled);
       setProtocol(c.protocol);
@@ -244,6 +248,32 @@ export default function SecurityScreen() {
         <View style={styles.switchRow}>
           <Text variant="bodyMedium">缓存消息明文</Text>
           <Switch value={previews} onValueChange={(v) => void togglePreviews(v)} />
+        </View>
+      </Surface>
+
+      {/* ---------- 阅后即焚 ---------- */}
+      <Surface style={styles.card} elevation={1}>
+        <Text variant="titleSmall" style={styles.sectionTitle}>
+          阅后即焚
+        </Text>
+        <Text variant="bodySmall" style={styles.hint}>
+          默认关闭：聊天记录会一直留在本机，重开应用仍可查看。
+          开启后，每次退出应用都会销毁本地聊天记录，下次打开是空的。
+        </Text>
+        <Text variant="bodySmall" style={styles.hint}>
+          注意：销毁只发生在本机。对方设备上已收到的消息不受影响。
+        </Text>
+        <View style={styles.switchRow}>
+          <Text variant="bodyMedium">退出应用即销毁聊天记录</Text>
+          <Switch
+            value={burn}
+            onValueChange={(v) => {
+              setBurn(v);
+              void setBurnAfterExit(v).then(() =>
+                setToast(v ? '已开启阅后即焚，下次启动将清空本地聊天记录' : '已关闭阅后即焚'),
+              );
+            }}
+          />
         </View>
       </Surface>
 

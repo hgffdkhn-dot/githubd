@@ -210,6 +210,36 @@ export class ApiClient {
     );
   }
 
+  /**
+   * 上报/更新本设备的展示名称
+   *
+   * 会话恢复路径（restoreSession）不会走 register/login，
+   * 所以老版本的设备名永远得不到更新，设备管理里就一直显示占位文案。
+   * 这里单独提供一个接口，让任何登录态都能刷新设备名。
+   */
+  async updateDeviceLabel(
+    token: string,
+    deviceId: string,
+    label: string,
+    platform: string,
+  ): Promise<void> {
+    await this.request(
+      '/v1/devices/label',
+      { method: 'POST', body: JSON.stringify({ deviceId, label, platform }) },
+      token,
+    );
+  }
+
+  /** 按 userId 查基本信息，用于回填会话列表里显示不出的用户名 */
+  async getUserById(token: string, userId: string): Promise<{ id: string; username: string; uid: string } | null> {
+    const result = await this.request<{ user: { id: string; username: string; uid: string } | null }>(
+      `/v1/users/${encodeURIComponent(userId)}`,
+      {},
+      token,
+    );
+    return result.user;
+  }
+
   // ------------------------------------------------------------------
   // 个人主页
   // ------------------------------------------------------------------

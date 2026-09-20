@@ -74,6 +74,13 @@ export class Gateway {
     } catch {
       return;
     }
+    // 客户端心跳：用于发现"半开"连接（移动网络下 TCP 已断但无 FIN）
+    if (frame.type === 'ping') {
+      if (conn.socket.readyState === WebSocket.OPEN) {
+        conn.socket.send(JSON.stringify({ type: 'pong' }));
+      }
+      return;
+    }
     // 客户端收到并成功解密后才 ack；ack 前服务端保留信封
     if (frame.type === 'ack' && Array.isArray(frame.envelopeIds)) {
       this.opts.store.acknowledge(frame.envelopeIds.slice(0, 500));

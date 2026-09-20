@@ -12,6 +12,8 @@ import { loadProxy } from '../settings/security.js';
 import { applyProxy } from '../../modules/e2ee-proxy/src/index.js';
 import type { Friend } from '../friends/Friends.js';
 import type { ConversationSummary } from './ChatEngine.js';
+import type { StreamStatus } from '../network/MessageStream.js';
+import type { StreamStatus } from '../network/MessageStream.js';
 
 type OwnProfileView = ResolvedProfile;
 export type { MyDevice, DisplayPresence, OwnProfileView };
@@ -47,6 +49,11 @@ export interface EngineLike {
   listConversations(): Promise<ConversationSummary[]>;
   /** 某会话的历史消息 */
   loadHistory(peerUserId: string, peerDeviceId: string): Promise<DecryptedMessage[]>;
+  /** 按 userId 回填用户信息；拿不到返回 null */
+  resolveUser(userId: string): Promise<{ id: string; username: string; uid: string } | null>;
+  /** 当前长连接状态：UI 显示"通信中 / 连接中…" */
+  readonly connectionStatus: StreamStatus;
+  onConnectionChange(listener: (status: StreamStatus) => void): () => void;
   addFriend(input: { userId: string; username: string; uid?: string }): Promise<void>;
   removeFriend(userId: string): Promise<void>;
   isFriend(userId: string): Promise<boolean>;
@@ -76,6 +83,10 @@ interface ChatContextValue {
   listFriends: () => Promise<Friend[]>;
   listConversations: () => Promise<ConversationSummary[]>;
   loadHistory: (peerUserId: string, peerDeviceId: string) => Promise<DecryptedMessage[]>;
+  /** 按 userId 回填用户信息：会话里可能出现本地无好友记录的用户 */
+  resolveUser: (userId: string) => Promise<{ id: string; username: string; uid: string } | null>;
+  connectionStatus: StreamStatus;
+  onConnectionChange: (listener: (status: StreamStatus) => void) => () => void;
   addFriend: (input: { userId: string; username: string; uid?: string }) => Promise<void>;
   removeFriend: (userId: string) => Promise<void>;
   isFriend: (userId: string) => Promise<boolean>;
@@ -116,6 +127,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [status, setStatus] = useState<'guest' | 'ready' | 'broken'>('guest');
   const [demo, setDemo] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<StreamStatus>('closed');
   const started = useRef(false);
 
   useEffect(() => {
@@ -153,6 +165,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     };
   }, [engine]);
 
+  // 订阅连接状态变化，供主界面右上角显示
+  useEffect(() => {
+    if (!engine) return;
+    setConnectionStatus(engine.connectionStatus);
+    return engine.onConnectionChange(setConnectionStatus);
+  }, [engine]);
+
   useEffect(() => {
     if (!engine || started.current || demo) return;
     started.current = true;
@@ -172,6 +191,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     () => ({
       engine,
       messages,
+      connectionStatus,
+      onConnectionChange: (listener) =>
+        engine ? engine.onConnectionChange(listener) : () => undefined,
       status,
       error,
       serverUrl,
@@ -280,6 +302,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         if (!engine) return [];
         return engine.loadHistory(peerUserId, peerDeviceId);
       },
+      async resolveUser(userId) {
+        if (!engine) return null;
+        return engine.resolveUser(userId);
+      },
+      connectionStatus: engine?.connectionStatus ?? 'closed',
+      onConnectionChange: (listener) => engine?.onConnectionChange(listener) ?? (() => undefined),
       async addFriend(input) {
         if (!engine) throw new Error('本地加密环境不可用');
         await engine.addFriend(input);
@@ -303,7 +331,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         setEngine(new ChatEngine(url));
       },
     }),
-    [engine, messages, status, error, serverUrl, demo],
+    [engine, messages, status, error, serverUrl, demo, connectionStatus],
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

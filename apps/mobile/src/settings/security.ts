@@ -56,6 +56,44 @@ export function setPreviewsEnabledSync(value: boolean): void {
 }
 
 // ---------------------------------------------------------------------
+// 阅后即焚：退出应用即销毁本地聊天记录
+// ---------------------------------------------------------------------
+
+const BURN_KEY = 'e2ee.security.burnAfterExit';
+
+/**
+ * 是否开启"退出应用即销毁聊天记录"
+ *
+ * 默认关闭 —— 聊天记录默认缓存，这是常规聊天软件的行为。
+ * 开启后，每次应用启动都会先清空本地消息（等价于"退出时已销毁"）。
+ *
+ * 为什么在**启动时**清而不是监听退出事件：
+ *  RN 没有可靠的"应用退出"回调（Android 上进程可能被直接回收，
+ *  iOS 上后台即挂起），挂在退出时清会漏；启动时清才是确定性的。
+ */
+export async function loadBurnAfterExit(): Promise<boolean> {
+  const raw = await safeStore.getItem(BURN_KEY);
+  return raw === '1';
+}
+
+export async function setBurnAfterExit(value: boolean): Promise<void> {
+  await safeStore.setItem(BURN_KEY, value ? '1' : '0');
+  burnCache = value;
+}
+
+let burnCache: boolean | null = null;
+
+/** 启动时调用：载入并立即返回是否需要销毁已有记录 */
+export async function initBurnAfterExit(): Promise<boolean> {
+  burnCache = await loadBurnAfterExit();
+  return burnCache;
+}
+
+export function burnAfterExitEnabled(): boolean {
+  return burnCache === true;
+}
+
+// ---------------------------------------------------------------------
 // 代理
 // ---------------------------------------------------------------------
 

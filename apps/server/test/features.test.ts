@@ -5,18 +5,22 @@ import { Store } from '../src/store.js';
 
 type Json = Record<string, unknown>;
 
-async function api(base: string, path: string, init: RequestInit = {}, token?: string) {
+/**
+ * 泛型版 api：让 `body.devices` 这类字段有具体类型，
+ * 否则断言处会报 unknown 无法访问属性。
+ */
+async function api<T = Json>(base: string, path: string, init: RequestInit = {}, token?: string): Promise<{ status: number; body: T }> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (token) headers.authorization = `Bearer ${token}`;
   const response = await fetch(`${base}${path}`, { ...init, headers });
-  const body = (await response.json()) as Json;
+  const body = (await response.json()) as T;
   return { status: response.status, body };
 }
 
 const KEY = Buffer.alloc(32, 9).toString('base64');
 
 async function register(base: string, username: string) {
-  const result = await api(base, '/v1/auth/register', {
+  const result = await api<{ userId: string; deviceId: string; token: string; uid: string }>(base, '/v1/auth/register', {
     method: 'POST',
     body: JSON.stringify({
       username,
@@ -36,7 +40,7 @@ test('设备管理：可查看设备列表，且不能踢出当前设备', async
 
   const alice = await register(base, `alice-${Date.now()}`);
 
-  const listed = await api(base, '/v1/devices/mine', {}, alice.token);
+  const listed = await api<{ devices: { id: string; label: string; platform: string; createdAt: number; lastSeen: number; current: boolean }[] }>(base, '/v1/devices/mine', {}, alice.token);
   const devices = listed.body.devices as { id: string; current: boolean }[];
   assert.equal(devices.length, 1);
   assert.equal(devices[0].current, true);
@@ -324,4 +328,228 @@ test('UID：老账号（无 uid 字段）载入快照后能自动补号', async 
   handle_unused: {
     // 仅占位，避免 lint 误判
   }
+});
+
+test('设备名：未上报时给出可读兜底，而不是"未命名设备"', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+
+  // 模拟老客户端：注册时不带 deviceLabel
+  const username = `legacy-${Date.now()}`;
+  const reg = await api<{ token: string }>(base, '/v1/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username,
+      password: 'p',
+      deviceId: 'dev-legacy',
+      identityKey: 'a'.repeat(44),
+      signingKey: 'b'.repeat(44),
+      signedPreKey: { keyId: 1, publicKey: 'c'.repeat(44), signature: 'd'.repeat(64) },
+      oneTimePreKeys: [],
+    }),
+  });
+  assert.equal(reg.status, 200, JSON.stringify(reg.body));
+
+  const listed = await api<{ devices: { id: string; label: string; platform: string; createdAt: number; lastSeen: number; current: boolean }[] }>(base, '/v1/devices/mine', {}, reg.body.token);
+  assert.equal(listed.status, 200);
+  const device = listed.body.devices.find((d: { id: string }) => d.id === 'dev-legacy');
+  assert.ok(device, '应能查到该设备');
+  if (!device) throw new Error('设备缺失');
+  assert.notEqual(device.label, '未命名设备');
+  assert.notEqual(device.label, '未知设备');
+  assert.ok(device.label.length > 0, '设备名不应为空');
+
+  handle.close();
+});
+
+test('设备名：会话恢复路径也能刷新型号（不只是注册时）', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  // 模拟 restoreSession 后单独刷新设备名
+  const updated = await api(
+    base,
+    '/v1/devices/label',
+    { method: 'POST', body: JSON.stringify({ deviceId: alice.deviceId, label: 'Pixel 7（Android 14）', platform: 'android' }) },
+    alice.token,
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+
+  const listed = await api<{ devices: { id: string; label: string; platform: string; createdAt: number; lastSeen: number; current: boolean }[] }>(base, '/v1/devices/mine', {}, alice.token);
+  const mine = listed.body.devices.find((d: { id: string }) => d.id === alice.deviceId);
+  if (!mine) throw new Error('设备缺失');
+  assert.equal(mine.label, 'Pixel 7（Android 14）');
+
+  handle.close();
+});
+
+test('设备名：不能改别人的设备', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  const r = await api(
+    base,
+    '/v1/devices/label',
+    { method: 'POST', body: JSON.stringify({ deviceId: 'someone-elses-device', label: 'hacked', platform: 'android' }) },
+    alice.token,
+  );
+  assert.equal(r.status, 403, '越权改他人设备名应被拒绝');
+
+  handle.close();
+});
+
+test('用户查询：可用 userId 回填用户名', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const username = `zed-${Date.now()}`;
+  const alice = await register(base, username);
+
+  const r = await api<{ user: { id: string; username: string; uid: string } | null }>(base, `/v1/users/${alice.userId}`, {}, alice.token);
+  assert.equal(r.status, 200);
+  if (!r.body.user) throw new Error('未返回用户');
+  assert.equal(r.body.user.username, username);
+  assert.equal(r.body.user.uid, alice.uid);
+
+  handle.close();
+});
+
+test('网关：ping 帧会得到 pong（用于发现半开连接）', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  const wsUrl = base.replace(/^http/, 'ws');
+  const ws = new WebSocket(`${wsUrl}/v1/ws?token=${encodeURIComponent(alice.token)}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.onopen = () => resolve();
+    ws.onerror = () => reject(new Error('连接失败'));
+  });
+
+  const pong = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('等 pong 超时')), 3000);
+    ws.onmessage = (e) => {
+      clearTimeout(timer);
+      resolve(String(e.data));
+    };
+    ws.send(JSON.stringify({ type: 'ping' }));
+  });
+  assert.match(pong, /"type":"pong"/);
+
+  ws.close();
+  handle.close();
+});
+
+test('设备名：未上报时给出可读兜底，而不是"未命名设备"', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+
+  // 模拟老客户端：注册时不带 deviceLabel
+  const username = `legacy-${Date.now()}`;
+  const reg = await api<{ token: string }>(base, '/v1/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username,
+      password: 'p',
+      deviceId: 'dev-legacy',
+      identityKey: 'a'.repeat(44),
+      signingKey: 'b'.repeat(44),
+      signedPreKey: { keyId: 1, publicKey: 'c'.repeat(44), signature: 'd'.repeat(64) },
+      oneTimePreKeys: [],
+    }),
+  });
+  assert.equal(reg.status, 200, JSON.stringify(reg.body));
+
+  const listed = await api<{ devices: { id: string; label: string; platform: string; createdAt: number; lastSeen: number; current: boolean }[] }>(base, '/v1/devices/mine', {}, reg.body.token);
+  assert.equal(listed.status, 200);
+  const device = listed.body.devices.find((d: { id: string }) => d.id === 'dev-legacy');
+  assert.ok(device, '应能查到该设备');
+  if (!device) throw new Error('设备缺失');
+  assert.notEqual(device.label, '未命名设备');
+  assert.notEqual(device.label, '未知设备');
+  assert.ok(device.label.length > 0, '设备名不应为空');
+
+  handle.close();
+});
+
+test('设备名：会话恢复路径也能刷新型号（不只是注册时）', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  // 模拟 restoreSession 后单独刷新设备名
+  const updated = await api(
+    base,
+    '/v1/devices/label',
+    { method: 'POST', body: JSON.stringify({ deviceId: alice.deviceId, label: 'Pixel 7（Android 14）', platform: 'android' }) },
+    alice.token,
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+
+  const listed = await api<{ devices: { id: string; label: string; platform: string; createdAt: number; lastSeen: number; current: boolean }[] }>(base, '/v1/devices/mine', {}, alice.token);
+  const mine = listed.body.devices.find((d: { id: string }) => d.id === alice.deviceId);
+  if (!mine) throw new Error('设备缺失');
+  assert.equal(mine.label, 'Pixel 7（Android 14）');
+
+  handle.close();
+});
+
+test('设备名：不能改别人的设备', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  const r = await api(
+    base,
+    '/v1/devices/label',
+    { method: 'POST', body: JSON.stringify({ deviceId: 'someone-elses-device', label: 'hacked', platform: 'android' }) },
+    alice.token,
+  );
+  assert.equal(r.status, 403, '越权改他人设备名应被拒绝');
+
+  handle.close();
+});
+
+test('用户查询：可用 userId 回填用户名', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const username = `zed-${Date.now()}`;
+  const alice = await register(base, username);
+
+  const r = await api<{ user: { id: string; username: string; uid: string } | null }>(base, `/v1/users/${alice.userId}`, {}, alice.token);
+  assert.equal(r.status, 200);
+  if (!r.body.user) throw new Error('未返回用户');
+  assert.equal(r.body.user.username, username);
+  assert.equal(r.body.user.uid, alice.uid);
+
+  handle.close();
+});
+
+test('网关：ping 帧会得到 pong（用于发现半开连接）', async () => {
+  const handle = await startServer(0, null);
+  const base = `http://127.0.0.1:${handle.port}`;
+  const alice = await register(base, `alice-${Date.now()}`);
+
+  const wsUrl = base.replace(/^http/, 'ws');
+  const ws = new WebSocket(`${wsUrl}/v1/ws?token=${encodeURIComponent(alice.token)}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.onopen = () => resolve();
+    ws.onerror = () => reject(new Error('连接失败'));
+  });
+
+  const pong = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('等 pong 超时')), 3000);
+    ws.onmessage = (e) => {
+      clearTimeout(timer);
+      resolve(String(e.data));
+    };
+    ws.send(JSON.stringify({ type: 'ping' }));
+  });
+  assert.match(pong, /"type":"pong"/);
+
+  ws.close();
+  handle.close();
 });
