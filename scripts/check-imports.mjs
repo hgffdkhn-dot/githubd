@@ -149,16 +149,37 @@ function collectExports(src) {
 function collectLocalDefs(src) {
   const names = new Set();
   const pats = [
+    // 解构声明：const { a, b } = useXxx()
+    // 不识别的话，从 hook 里取出的函数会被误报成"未导入"
+    /(?:const|let|var)\s*\{([^}]*)\}\s*=/g,
     /(?:export\s+)?(?:async\s+)?function\s+(\w+)/g,
     /(?:export\s+)?class\s+(\w+)/g,
     /(?:export\s+)?(?:const|let|var)\s+(\w+)/g,
     /(?:export\s+)?(?:interface|type|enum)\s+(\w+)/g,
+    // 类方法定义：必须紧跟 `{`（方法体）才算定义。
+    // ⚠️ 不能只匹配 `name(` —— 那样连 `foo(x);` 这种调用也会被当成"本地定义"，
+    // 脚本就再也不报任何问题了（曾因此漏掉真实缺陷）。
+    // ⚠️ 参数表必须用 [^)]*（不跨行）。
+    // 用 [\s\S]*? 的话，遇到 `get self(): {...} | null {` 这类返回类型是对象字面量的
+    // getter 会匹配失败并跨行回溯，把后面好几个方法一起吞掉，造成误报与漏检。
+    /(?:^|\n)\s+(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([a-zA-Z_]\w*)\s*\([^)]*\)\s*(?::[^\n;{]*)?\{/g,
     // 解构与参数
     /(\w+)\s*[:,)]/g,
   ];
   for (const re of pats) {
     let m;
-    while ((m = re.exec(src)) !== null) names.add(m[1]);
+    while ((m = re.exec(src)) !== null) {
+      // 解构正则的捕获组是一整串 `a, b: c`，要拆开；
+      // `b: c` 取后者（本地名）
+      if (m[1].includes(',')) {
+        for (const raw of m[1].split(',')) {
+          const name = raw.trim().split(/\s*:\s*/).pop().trim();
+          if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+        }
+        continue;
+      }
+      names.add(m[1]);
+    }
   }
   return names;
 }
@@ -203,7 +224,9 @@ for (const [file, info] of fileInfo) {
     // 判断本文件是否"使用"了它
     // 前面紧跟 `.` 的是属性访问（如 Buffer.concat、m.randomBytes），
     // 那是别的对象的方法，不是我们要校验的裸标识符，必须排除，否则误报
-    const useRe = new RegExp(`(?<!\\.)\\b${name}\\b`);
+    // 末尾带 `(?!\\?)`：排除 `randomBytes?:` 这类接口里的可选属性声明 ——
+    // 那是类型定义，不是对别处导出的调用
+    const useRe = new RegExp(`(?<!\\.)\\b${name}\\b(?!\\?)`);
     if (!useRe.test(info.clean)) continue;
 
     // 已具名导入 → OK

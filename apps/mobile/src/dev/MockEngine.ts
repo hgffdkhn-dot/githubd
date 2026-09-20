@@ -7,11 +7,12 @@
  * ⚠️ 不做任何加密，不产生任何密钥，不连接网络。仅用于验证界面。
  */
 
-import type { DecryptedMessage } from '../chat/ChatEngine.js';
+import type { DecryptedMessage, ConversationSummary } from '../chat/ChatEngine.js';
 import type { MyDevice } from '../network/Api.js';
 import type { DisplayPresence } from '../presence/PresenceManager.js';
 import type { ResolvedProfile } from '../profile/ProfileManager.js';
 import { avatarColorFor, initialOf } from '../profile/profileCrypto.js';
+import { MemoryFriendStore, type Friend } from '../friends/Friends.js';
 
 /**
  * 预置的演示联系人
@@ -51,6 +52,40 @@ export class MockEngine {
   /** 演示模式没有真实 UID，用稳定派生值占位 */
   readonly uid = stableUid('demo-self');
 
+  // ------------------------------------------------------------------
+  // 好友名单：演示模式用内存存储，不碰 SQLite
+  // ------------------------------------------------------------------
+
+  private friendStore = new MemoryFriendStore();
+
+  async listFriends(): Promise<Friend[]> {
+    return this.friendStore.list();
+  }
+
+  async addFriend(input: { userId: string; username: string; uid?: string }): Promise<void> {
+    await this.friendStore.add(input);
+  }
+
+  async removeFriend(userId: string): Promise<void> {
+    await this.friendStore.remove(userId);
+  }
+
+  async isFriend(userId: string): Promise<boolean> {
+    return this.friendStore.has(userId);
+  }
+
+  // ------------------------------------------------------------------
+  // 会话列表与历史：演示模式不持久化，历史恒为空
+  // ------------------------------------------------------------------
+
+  async listConversations(): Promise<ConversationSummary[]> {
+    return [];
+  }
+
+  async loadHistory(_peerUserId: string, _peerDeviceId: string): Promise<DecryptedMessage[]> {
+    return [];
+  }
+
   async ensureUid(): Promise<string | null> {
     return this.uid;
   }
@@ -61,6 +96,8 @@ export class MockEngine {
     this.timers = [];
     this.listeners.clear();
     this.currentUser = '';
+    // 换成新的空存储，等价于清空好友名单
+    this.friendStore = new MemoryFriendStore();
   }
   private replyIndex = 0;
 

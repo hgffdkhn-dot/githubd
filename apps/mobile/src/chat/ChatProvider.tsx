@@ -8,6 +8,10 @@ import type { MyDevice } from '../network/Api.js';
 import type { DisplayPresence } from '../presence/PresenceManager.js';
 import type { ResolvedProfile } from '../profile/ProfileManager.js';
 import { loadPrivacy } from '../settings/privacy.js';
+import { loadProxy } from '../settings/security.js';
+import { applyProxy } from '../../modules/e2ee-proxy/src/index.js';
+import type { Friend } from '../friends/Friends.js';
+import type { ConversationSummary } from './ChatEngine.js';
 
 type OwnProfileView = ResolvedProfile;
 export type { MyDevice, DisplayPresence, OwnProfileView };
@@ -37,6 +41,15 @@ export interface EngineLike {
   ensureUid(): Promise<string | null>;
   /** 退出账号：清除本机身份与会话 */
   logout(): Promise<void>;
+  // 好友名单
+  listFriends(): Promise<Friend[]>;
+  /** 主界面会话列表（有聊天记录的会话） */
+  listConversations(): Promise<ConversationSummary[]>;
+  /** 某会话的历史消息 */
+  loadHistory(peerUserId: string, peerDeviceId: string): Promise<DecryptedMessage[]>;
+  addFriend(input: { userId: string; username: string; uid?: string }): Promise<void>;
+  removeFriend(userId: string): Promise<void>;
+  isFriend(userId: string): Promise<boolean>;
   // 在线状态
   startPresence(shareOnline: boolean): Promise<void>;
   setPresenceSharing(value: boolean): void;
@@ -60,9 +73,31 @@ interface ChatContextValue {
   enterDemo: () => Promise<void>;
   leaveDemo: () => Promise<void>;
   logout: () => Promise<void>;
+  listFriends: () => Promise<Friend[]>;
+  listConversations: () => Promise<ConversationSummary[]>;
+  loadHistory: (peerUserId: string, peerDeviceId: string) => Promise<DecryptedMessage[]>;
+  addFriend: (input: { userId: string; username: string; uid?: string }) => Promise<void>;
+  removeFriend: (userId: string) => Promise<void>;
+  isFriend: (userId: string) => Promise<boolean>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
+
+/**
+ * 启动时装载用户保存的代理
+ *
+ * 必须在任何网络请求之前调用，否则 OkHttpClient 已经建好，代理就对它无效了。
+ * 失败一律降级为直连 —— 代理配错了不该让 App 起不来。
+ */
+async function applyConfiguredProxy(): Promise<void> {
+  try {
+    const config = await loadProxy();
+    if (!config.enabled || !config.host) return;
+    applyProxy(config.protocol, config.host, config.port);
+  } catch {
+    // 忽略：连不上代理也比整个 App 不可用好
+  }
+}
 
 /** 登录后开启在线心跳；是否对他人可见取决于隐私设置 */
 async function startPresenceFor(engine: EngineLike): Promise<void> {
@@ -86,9 +121,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     getServerUrl()
-      .then((url) => {
+      .then(async (url) => {
         if (cancelled) return;
         setServerUrlState(url);
+        // 代理必须在发起任何网络请求之前装载 ——
+        // OkHttp 的 client 一旦建好，之后再改 ProxySelector 就对它无效了
+        await applyConfiguredProxy();
+        if (cancelled) return;
         try {
           setEngine(new ChatEngine(url));
         } catch (e) {
@@ -228,6 +267,30 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         // 引擎内部状态已清，重建一个干净的，让下次登录从头开始
         const url = serverUrl ?? (await getServerUrl());
         setEngine(new ChatEngine(url));
+      },
+      async listFriends() {
+        if (!engine) return [];
+        return engine.listFriends();
+      },
+      async listConversations() {
+        if (!engine) return [];
+        return engine.listConversations();
+      },
+      async loadHistory(peerUserId, peerDeviceId) {
+        if (!engine) return [];
+        return engine.loadHistory(peerUserId, peerDeviceId);
+      },
+      async addFriend(input) {
+        if (!engine) throw new Error('本地加密环境不可用');
+        await engine.addFriend(input);
+      },
+      async removeFriend(userId) {
+        if (!engine) return;
+        await engine.removeFriend(userId);
+      },
+      async isFriend(userId) {
+        if (!engine) return false;
+        return engine.isFriend(userId);
       },
       async leaveDemo() {
         const url = serverUrl ?? (await getServerUrl());

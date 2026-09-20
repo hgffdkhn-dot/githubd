@@ -51,6 +51,9 @@ export class ApiClient {
     deviceId: string;
     identity: LocalIdentity;
     preKeys: GeneratedPreKeys;
+    /** 设备型号等展示信息；不传服务端会显示"未命名设备" */
+    deviceLabel?: string;
+    devicePlatform?: string;
   }): Promise<AuthResult> {
     return this.request<AuthResult>('/v1/auth/register', {
       method: 'POST',
@@ -58,6 +61,8 @@ export class ApiClient {
         username: params.username,
         password: params.password,
         deviceId: params.deviceId,
+        deviceLabel: params.deviceLabel,
+        devicePlatform: params.devicePlatform,
         identityKey: toBase64(params.identity.identityKey),
         signingKey: toBase64(params.identity.signingKey),
         signedPreKey: {
@@ -78,6 +83,8 @@ export class ApiClient {
     password: string;
     deviceId: string;
     identity: LocalIdentity;
+    deviceLabel?: string;
+    devicePlatform?: string;
   }): Promise<AuthResult> {
     return this.request<AuthResult>('/v1/auth/login', {
       method: 'POST',
@@ -85,6 +92,8 @@ export class ApiClient {
         username: params.username,
         password: params.password,
         deviceId: params.deviceId,
+        deviceLabel: params.deviceLabel,
+        devicePlatform: params.devicePlatform,
         identityKey: toBase64(params.identity.identityKey),
         signingKey: toBase64(params.identity.signingKey),
       }),

@@ -20,7 +20,8 @@ jobs:
     name: 构建 Android APK / AAB
     runs-on: ubuntu-latest
     env:
-      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL || 'https://localhost:8787' }}
+      # 不设默认值：未配置时由客户端 serverConfig 的 DEFAULT_SERVER 接管
+      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,13 +60,14 @@ jobs:
             expo-file-system \
             expo-linking \
             expo-constants \
-            expo-status-bar
+            expo-status-bar \
+            expo-device
 
       # 秒级失败：确认这些包真的落在 node_modules 里
       - name: 校验 Expo Router 依赖齐备
         run: |
           missing=0
-          for pkg in react-native-safe-area-context react-native-screens react-native-paper react-native-vector-icons react-native-quick-crypto react-native-quick-base64 expo-linking expo-constants expo-status-bar expo-router; do
+          for pkg in react-native-safe-area-context react-native-screens react-native-paper react-native-vector-icons react-native-quick-crypto react-native-quick-base64 expo-linking expo-constants expo-status-bar expo-router expo-device expo-file-system expo-sqlite; do
             if [ -d "node_modules/$pkg" ]; then
               echo "OK $pkg $(node -p "require('./node_modules/$pkg/package.json').version" 2>/dev/null)"
             else

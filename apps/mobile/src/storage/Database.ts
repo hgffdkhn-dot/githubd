@@ -68,8 +68,156 @@ export function openDatabase(name = 'e2ee.db'): SQLite.SQLiteDatabase {
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_peer ON messages (peer_key, created_at);
+
+    -- 好友名单
+    -- 只存可发现信息（userId / 用户名 / UID），不含任何密钥材料。
+    CREATE TABLE IF NOT EXISTS friends (
+      user_id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      uid TEXT,
+      added_at INTEGER NOT NULL
+    );
   `);
   return db;
+}
+
+export interface FriendRow {
+  userId: string;
+  username: string;
+  uid: string;
+  addedAt: number;
+}
+
+export function saveFriend(row: FriendRow): void {
+  openDatabase().runSync(
+    `INSERT OR REPLACE INTO friends (user_id, username, uid, added_at) VALUES (?, ?, ?, ?)`,
+    [row.userId, row.username, row.uid, row.addedAt],
+  );
+}
+
+export function listFriends(): FriendRow[] {
+  return openDatabase()
+    .getAllSync<{ user_id: string; username: string; uid: string | null; added_at: number }>(
+      `SELECT * FROM friends ORDER BY added_at DESC`,
+    )
+    .map((r) => ({
+      userId: r.user_id,
+      username: r.username,
+      uid: r.uid ?? '',
+      addedAt: Number(r.added_at),
+    }));
+}
+
+export function deleteFriend(userId: string): void {
+  openDatabase().runSync(`DELETE FROM friends WHERE user_id = ?`, [userId]);
+}
+
+export function isFriend(userId: string): boolean {
+  const row = openDatabase().getFirstSync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM friends WHERE user_id = ?`,
+    [userId],
+  );
+  return !!row && Number(row.n) > 0;
+}
+
+/**
+ * 该好友最近一次收发消息的时间
+ *
+ * peer_key 形如 `<userId>::<deviceId>`，所以按前缀匹配。
+ * 只取时间不取内容——明文预览需要解密，会引入不必要的复杂度和风险。
+ */
+export function lastActivityAt(userId: string): number | null {
+  const row = openDatabase().getFirstSync<{ t: number | null }>(
+    `SELECT MAX(created_at) AS t FROM messages WHERE peer_key LIKE ?`,
+    [`${userId}::%`],
+  );
+  if (!row || row.t == null) return null;
+  return Number(row.t);
+}
+
+/** 退出账号时连同好友名单一起清掉 */
+export function deleteAllFriends(): void {
+  openDatabase().runSync(`DELETE FROM friends`);
+}
+
+// ---------------------------------------------------------------------
+// 会话列表（主界面用）
+// ---------------------------------------------------------------------
+
+export interface ConversationRow {
+  /** peerKey，形如 `<userId>::<deviceId>` */
+  peerKey: string;
+  userId: string;
+  /** 最后一条消息的明文预览；关闭预览时为空串 */
+  preview: string;
+  lastAt: number;
+  messageCount: number;
+}
+
+/**
+ * 列出有聊天记录的会话，按最后一条消息时间倒序
+ *
+ * userId 从 peer_key 里截取（`userId::deviceId`）。
+ * 同一用户的多个设备会算成多个 peer_key，这里按 userId 归并，
+ * 取该用户所有设备中最近的一次 —— 否则同一个人会在列表里出现两次。
+ */
+export function listConversations(withPreview: boolean): ConversationRow[] {
+  const previewExpr = withPreview ? `COALESCE(plaintext_preview, '')` : `''`;
+  const rows = openDatabase().getAllSync<{
+    peer_key: string;
+    preview: string;
+    last_at: number;
+    cnt: number;
+  }>(
+    `SELECT peer_key,
+            ${previewExpr} AS preview,
+            MAX(created_at) AS last_at,
+            COUNT(*) AS cnt
+     FROM messages
+     GROUP BY peer_key
+     ORDER BY last_at DESC`,
+  );
+
+  // 按 userId 归并（一人多设备）
+  const byUser = new Map<string, ConversationRow>();
+  for (const r of rows) {
+    const peerKey = String(r.peer_key);
+    const userId = peerKey.split('::')[0] ?? peerKey;
+    const lastAt = Number(r.last_at);
+    const existing = byUser.get(userId);
+    if (!existing || lastAt > existing.lastAt) {
+      byUser.set(userId, {
+        peerKey,
+        userId,
+        preview: String(r.preview ?? ''),
+        lastAt,
+        messageCount: Number(r.cnt) + (existing?.messageCount ?? 0),
+      });
+    } else {
+      existing.messageCount += Number(r.cnt);
+    }
+  }
+  return [...byUser.values()].sort((a, b) => b.lastAt - a.lastAt);
+}
+
+/** 清除某会话的明文预览（关闭预览开关时调用） */
+export function clearMessagePreviews(): void {
+  openDatabase().runSync(`UPDATE messages SET plaintext_preview = NULL`);
+}
+
+/**
+ * 清空所有消息
+ *
+ * 退出账号时必须调用：身份密钥已销毁，剩下的密文再也无法解密，
+ * 留着只是占用空间且给人"消息还在"的错觉。
+ */
+export function clearAllMessages(): void {
+  const database = openDatabase();
+  database.withTransactionSync(() => {
+    database.runSync(`DELETE FROM messages`);
+    database.runSync(`DELETE FROM sessions`);
+    database.runSync(`DELETE FROM skipped_keys`);
+  });
 }
 
 export interface MessageRow {
@@ -81,14 +229,33 @@ export interface MessageRow {
   header: string;
   createdAt: number;
   status: 'queued' | 'sent' | 'delivered' | 'failed';
+  /**
+   * 明文预览（仅本地，用于主界面会话列表）
+   *
+   * ⚠️ 这是本地明文落库，属于可用性换来的取舍：
+   *  - 服务端仍然只经手密文，E2EE 承诺不受影响
+   *  - 风险仅限"设备被物理接触且未锁屏"的场景
+   *  - 用户可在 设置 → 安全 关闭；关闭后此列为 NULL
+   */
+  preview?: string;
 }
 
 export function saveMessage(row: MessageRow): void {
   openDatabase().runSync(
     `INSERT OR REPLACE INTO messages
-     (envelope_id, peer_key, direction, ciphertext, nonce, header, created_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [row.envelopeId, row.peerKey, row.direction, row.ciphertext, row.nonce, row.header, row.createdAt, row.status],
+     (envelope_id, peer_key, direction, ciphertext, nonce, header, created_at, status, plaintext_preview)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.envelopeId,
+      row.peerKey,
+      row.direction,
+      row.ciphertext,
+      row.nonce,
+      row.header,
+      row.createdAt,
+      row.status,
+      row.preview ?? null,
+    ],
   );
 }
 
@@ -97,10 +264,29 @@ export function updateMessageStatus(envelopeId: string, status: MessageRow['stat
 }
 
 export function listMessages(peerKey: string): MessageRow[] {
-  return openDatabase().getAllSync<MessageRow>(
-    `SELECT * FROM messages WHERE peer_key = ? ORDER BY created_at ASC`,
-    [peerKey],
-  );
+  return openDatabase()
+    .getAllSync<{
+      envelope_id: string;
+      peer_key: string;
+      direction: string;
+      ciphertext: string;
+      nonce: string;
+      header: string;
+      created_at: number;
+      status: string;
+      plaintext_preview: string | null;
+    }>(`SELECT * FROM messages WHERE peer_key = ? ORDER BY created_at ASC`, [peerKey])
+    .map((r) => ({
+      envelopeId: r.envelope_id,
+      peerKey: r.peer_key,
+      direction: r.direction as MessageRow['direction'],
+      ciphertext: r.ciphertext,
+      nonce: r.nonce,
+      header: r.header,
+      createdAt: Number(r.created_at),
+      status: r.status as MessageRow['status'],
+      preview: r.plaintext_preview ?? undefined,
+    }));
 }
 
 export function saveSession(

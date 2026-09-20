@@ -41,11 +41,21 @@ import {
   OPK_PREFIX,
 } from '../crypto/Keystore.js';
 import { SqliteSessionStore } from '../storage/SessionRepository.js';
-import { saveMessage, updateMessageStatus, listMessages, openDatabase } from '../storage/Database.js';
+import {
+  saveMessage,
+  updateMessageStatus,
+  listMessages,
+  openDatabase,
+  listConversations as listConversationsRaw,
+} from '../storage/Database.js';
 import { bootstrapCrypto } from '../crypto/QuickCryptoAead.js';
 import { ProfileManager, type ResolvedProfile } from '../profile/ProfileManager.js';
 import { PresenceManager, type DisplayPresence } from '../presence/PresenceManager.js';
 import type { MyDevice } from '../network/Api.js';
+import { getDeviceLabel } from '../device/deviceInfo.js';
+import { SqliteFriendStore, type Friend, type FriendStore } from '../friends/Friends.js';
+import { deleteFriend, deleteAllFriends, clearAllMessages } from '../storage/Database.js';
+import { previewsEnabled, initPreviewsFlag } from '../settings/security.js';
 
 type OwnProfileView = ResolvedProfile;
 export type { OwnProfileView, DisplayPresence, MyDevice };
@@ -53,6 +63,16 @@ export type { OwnProfileView, DisplayPresence, MyDevice };
 const OPK_BATCH_SIZE = 50;
 const OPK_REPLENISH_THRESHOLD = 20;
 const SPK_ROTATION_MS = 7 * 24 * 3600 * 1000;
+
+/** 主界面会话列表的一项 */
+export interface ConversationSummary {
+  userId: string;
+  peerKey: string;
+  /** 最后一条消息的明文预览；关闭本地缓存时为空串 */
+  preview: string;
+  lastAt: number;
+  messageCount: number;
+}
 
 export interface DecryptedMessage {
   envelopeId: string;
@@ -74,6 +94,7 @@ export class ChatEngine {
   private myUid: string | null = null;
   private presence: PresenceManager | null = null;
   private profiles: ProfileManager | null = null;
+  private friendStore: FriendStore = new SqliteFriendStore();
   private nextOpkId = 1;
   private spkId = 1;
   private spkGeneratedAt = 0;
@@ -279,6 +300,15 @@ export class ChatEngine {
     await this.api.publishPreKeys(this.token, { signedPreKey: bundle.signedPreKey, oneTimePreKeys: bundle.oneTimePreKeys });
   }
 
+  /** 设备型号等展示信息；采集失败也有可读兜底，绝不抛错阻断登录 */
+  private deviceInfo(): { deviceLabel: string; devicePlatform: string } {
+    try {
+      return getDeviceLabel();
+    } catch {
+      return { deviceLabel: 'Android 设备', devicePlatform: 'android' };
+    }
+  }
+
   async register(username: string, password: string): Promise<void> {
     this.identity = await this.ensureIdentity();
     this.deviceId = await this.ensureDeviceId();
@@ -290,6 +320,7 @@ export class ChatEngine {
       deviceId: this.deviceId,
       identity: this.identity,
       preKeys: bundle,
+      ...this.deviceInfo(),
     });
     await this.persistPreKeyBundle(bundle);
     await this.completeAuth(result);
@@ -298,9 +329,41 @@ export class ChatEngine {
   async login(username: string, password: string): Promise<void> {
     this.identity = await this.ensureIdentity();
     this.deviceId = await this.ensureDeviceId();
-    const result = await this.api.login({ username, password, deviceId: this.deviceId, identity: this.identity });
+    const result = await this.api.login({
+      username,
+      password,
+      deviceId: this.deviceId,
+      identity: this.identity,
+      ...this.deviceInfo(),
+    });
     await this.completeAuth(result);
     await this.rotateSignedPreKeyIfNeeded();
+  }
+
+  // ------------------------------------------------------------------
+  // 好友名单（本地存储，不上传服务端）
+  // ------------------------------------------------------------------
+
+  async listFriends(): Promise<Friend[]> {
+    return this.friendStore.list();
+  }
+
+  async addFriend(input: { userId: string; username: string; uid?: string }): Promise<void> {
+    await this.friendStore.add(input);
+  }
+
+  async removeFriend(userId: string): Promise<void> {
+    await this.friendStore.remove(userId);
+    // 好友删掉后会话记录也一并清掉，避免列表里留下无法解释的残留会话
+    try {
+      deleteFriend(userId);
+    } catch {
+      // 数据库不可用时不影响好友删除本身
+    }
+  }
+
+  async isFriend(userId: string): Promise<boolean> {
+    return this.friendStore.has(userId);
   }
 
   /**
@@ -320,6 +383,15 @@ export class ChatEngine {
     this.listeners.clear();
 
     await wipeAll();
+
+    // 好友名单与本地消息都跟着本机身份走：身份清了，它们也应清掉。
+    // 旧消息的密文在密钥销毁后再也解不开，留着只会造成"消息还在"的错觉。
+    try {
+      deleteAllFriends();
+      clearAllMessages();
+    } catch {
+      // 数据库不可用不影响退出流程
+    }
 
     this.token = '';
     this.identity = null;
@@ -370,6 +442,8 @@ export class ChatEngine {
   async start(): Promise<void> {
     if (!this.token) throw new Error('ChatEngine: 未登录');
     openDatabase();
+    // 预览开关要在任何消息落库之前就绪，否则第一条消息会用错默认值
+    await initPreviewsFlag();
     if (!this.manager) {
       this.manager = new SessionManager(
         this.identity!,
@@ -433,6 +507,7 @@ export class ChatEngine {
         header: JSON.stringify(dto.header),
         createdAt: envelope.createdAt,
         status: 'delivered',
+        preview: previewsEnabled() ? text : undefined,
       });
       this.emit({
         envelopeId: envelope.envelopeId,
@@ -454,6 +529,8 @@ export class ChatEngine {
         header: JSON.stringify(dto.header),
         createdAt: envelope.createdAt,
         status: 'failed',
+        // 解密失败不落明文：本来也没有明文，且失败原因可能含敏感细节
+        preview: undefined,
       });
       this.emit({
         envelopeId: envelope.envelopeId,
@@ -488,6 +565,7 @@ export class ChatEngine {
       header: JSON.stringify(dto.header),
       createdAt: envelope.createdAt,
       status: 'queued',
+      preview: previewsEnabled() ? text : undefined,
     });
     this.emit({
       envelopeId: envelope.envelopeId,
@@ -504,6 +582,41 @@ export class ChatEngine {
     } catch {
       updateMessageStatus(envelope.envelopeId, 'failed');
     }
+  }
+
+  /**
+   * 读取某会话的历史消息
+   *
+   * ⚠️ 这里**不做重新解密**，而是读取落库时缓存的明文。
+   * 原因：Double Ratchet 的消息密钥是一次性的，解密后即丢弃，
+   * 事后再拿密文也解不出来（这是前向安全的代价）。
+   * 所以历史可读性完全依赖"落库时是否缓存了明文"。
+   *
+   * 若用户关闭了本地消息缓存，历史消息只能显示占位文案 ——
+   * 这是有意取舍，UI 必须说清楚而不是假装消息丢了。
+   */
+  async loadHistory(peerUserId: string, peerDeviceId: string): Promise<DecryptedMessage[]> {
+    const rows = listMessages(peerKeyOf(peerUserId, peerDeviceId));
+    return rows.map((r) => ({
+      envelopeId: r.envelopeId,
+      peerKey: r.peerKey,
+      direction: r.direction,
+      text: r.preview ?? (r.direction === 'out' ? '（本地未缓存此消息）' : '（消息内容未缓存）'),
+      createdAt: r.createdAt,
+      status: r.status,
+    }));
+  }
+
+  /** 主界面会话列表：有聊天记录的会话，按最近时间倒序 */
+  async listConversations(): Promise<ConversationSummary[]> {
+    const rows = listConversationsRaw(previewsEnabled());
+    return rows.map((r) => ({
+      userId: r.userId,
+      peerKey: r.peerKey,
+      preview: r.preview,
+      lastAt: r.lastAt,
+      messageCount: r.messageCount,
+    }));
   }
 
   async listConversation(peerUserId: string, peerDeviceId: string): Promise<{ envelopeId: string; ciphertext: string }[]> {

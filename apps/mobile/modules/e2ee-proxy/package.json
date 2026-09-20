@@ -1,0 +1,8 @@
+{
+  "name": "e2ee-proxy",
+  "version": "0.1.0",
+  "description": "用户自填的正向代理（HTTP / SOCKS5），不提供任何代理节点",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true
+}

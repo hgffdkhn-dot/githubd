@@ -30,6 +30,7 @@ export default function ChatScreen() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<ResolvedProfile | null>(null);
   const [presence, setPresence] = useState<DisplayPresence | null>(null);
+  const [history, setHistory] = useState<DecryptedMessage[]>([]);
 
   useEffect(() => {
     if (!engine) return;
@@ -42,6 +43,20 @@ export default function ChatScreen() {
       .catch((e) => setFailure((e as Error).message))
       .finally(() => setLoading(false));
   }, [engine, userId]);
+
+  /**
+   * 读历史消息
+   *
+   * 必须等 peerDeviceId 解析出来才能查库（peerKey 依赖它）。
+   * 每次进入会话都会重读，退出应用再进来也能看到聊天记录。
+   */
+  useEffect(() => {
+    if (!engine || !userId || !peerDeviceId) return;
+    engine
+      .loadHistory(userId, peerDeviceId)
+      .then(setHistory)
+      .catch(() => setHistory([]));
+  }, [engine, userId, peerDeviceId]);
 
   // 对方资料与在线状态：失败都不影响聊天，只降级展示
   useEffect(() => {
@@ -56,10 +71,16 @@ export default function ChatScreen() {
       .catch(() => setPresence(null));
   }, [engine, userId]);
 
-  const visible = useMemo(
-    () => messages.filter((m) => m.peerKey.startsWith(`${userId}::`)),
-    [messages, userId],
-  );
+  const visible = useMemo(() => {
+    // 历史来自数据库，实时来自内存；同一个 envelopeId 只保留一条，
+    // 且以内存为准（内存里的明文一定是刚解密出来的最新内容）
+    const byId = new Map<string, DecryptedMessage>();
+    for (const h of history) byId.set(h.envelopeId, h);
+    for (const m of messages) {
+      if (m.peerKey.startsWith(`${userId}::`)) byId.set(m.envelopeId, m);
+    }
+    return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
+  }, [messages, history, userId]);
 
   async function onSend() {
     if (!peerDeviceId || !draft.trim()) return;
@@ -177,7 +198,17 @@ function MessageBubble({ item }: { item: DecryptedMessage }) {
         },
       ]}
     >
-      <Text variant="bodyMedium" style={{ color: failed ? theme.colors.onErrorContainer : undefined }}>
+      {/*
+        selectable：长按可选中并复制。RN 的 <Text> 默认不可选，
+        不加这个属性接收方发来的内容就复制不了。
+        selectionColor 让选中区域有高亮，Android 上更符合直觉。
+      */}
+      <Text
+        variant="bodyMedium"
+        selectable
+        selectionColor={theme.colors.primaryContainer}
+        style={{ color: failed ? theme.colors.onErrorContainer : undefined }}
+      >
         {item.text}
       </Text>
       <Text variant="bodySmall" style={styles.meta}>

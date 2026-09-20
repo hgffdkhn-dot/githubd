@@ -43,7 +43,8 @@ export default function LoginScreen() {
   }, []);
 
   React.useEffect(() => {
-    if (status === 'ready') router.replace('/contacts');
+    // 注册/登录成功后进主界面（会话 Tab）
+    if (status === 'ready') router.replace('/home');
   }, [status, router]);
 
   async function submit() {
@@ -57,7 +58,7 @@ export default function LoginScreen() {
       } else {
         await register(username, password);
       }
-      router.replace('/contacts');
+      router.replace('/home');
     } catch {
       // 错误已通过 context 暴露在界面上
     } finally {
